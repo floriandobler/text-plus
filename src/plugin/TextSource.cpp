@@ -2,6 +2,8 @@
 
 #include "core/GlyphCache.h"
 
+#include <hb.h>
+
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -675,6 +677,20 @@ FFResult TextSource::ProcessOpenGL( ProcessOpenGLStruct* pGL )
 			inst.spreadAtlasPx = (float)L.spreadPx;
 			instances.push_back( inst );
 		}
+		// Queue the rest of Latin-1 behind the visible glyphs, so typing new text
+		// rarely has to wait for glyph generation.
+		const uint64_t warmKey = ( (uint64_t)face->id() << 8 ) | (uint64_t)level;
+		if( warmKey != prewarmedKey )
+		{
+			prewarmedKey = warmKey;
+			for( hb_codepoint_t cp = 0x21; cp <= 0xFF; ++cp )
+			{
+				hb_codepoint_t gid = 0;
+				if( ( cp < 0x7F || cp > 0xA0 ) && hb_font_get_nominal_glyph( face->hbFont(), cp, &gid ) )
+					cache.get( face, gid, level );
+			}
+		}
+
 		if( atlasFull )
 		{
 			atlas.clear();// rebuilt from the CPU cache over the next frames

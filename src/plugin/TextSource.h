@@ -155,6 +155,7 @@ private:
 	std::vector< GlyphState > glyphStates;
 	std::vector< GlyphInstance > instances;
 	bool pendingGlyphs = false;
+	uint64_t prewarmedKey = 0;// face id + spread level whose Latin-1 set was requested
 	bool lastVisibilityBox = true, lastVisibilityOutline2 = true;
 	bool visibilityInitialised = false;
 };
