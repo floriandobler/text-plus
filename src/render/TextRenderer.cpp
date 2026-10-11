@@ -19,7 +19,7 @@ namespace textplus
 namespace
 {
 // ---------------------------------------------------------------------------
-// Shared vertex shader + glyph distance function (passes 1 and 1b)
+// Shared vertex shader + glyph distance function (field passes)
 // ---------------------------------------------------------------------------
 const char* kGlyphVS = R"GLSL(#version 410 core
 layout( location = 0 ) in vec2 aCorner;       // 0..1
@@ -37,6 +37,7 @@ uniform float uSize;       // font size, px
 out vec2 vUV;
 flat out vec4 vMisc;
 flat out vec4 vTint;
+flat out float vId;
 
 vec2 rotate( vec2 p, vec2 cs ) { return vec2( cs.x * p.x - cs.y * p.y, cs.y * p.x + cs.x * p.y ); }
 
@@ -50,6 +51,7 @@ void main()
 	vUV   = mix( iUV.xy, iUV.zw, aCorner );
 	vMisc = iMisc;
 	vTint = iTint;
+	vId   = float( gl_InstanceID % 2048 );// exact in half float
 }
 )GLSL";
 
@@ -61,6 +63,7 @@ uniform float uSharpCorners;// 1 = MSDF everywhere (mitred corners), 0 = true di
 in vec2 vUV;
 flat in vec4 vMisc;
 flat in vec4 vTint;
+flat in float vId;
 
 float median( vec3 v ) { return max( min( v.r, v.g ), min( max( v.r, v.g ), v.b ) ); }
 
@@ -78,33 +81,44 @@ float glyphDistancePx()
 }
 )GLSL";
 
+// Layer k keeps, per pixel, the k-th nearest glyph: the depth test keeps the
+// smallest distance, glyphs already stored in layers 0..k-1 are skipped.
 const std::string kFieldFS = std::string( "#version 410 core\n" ) + kGlyphDistance + R"GLSL(
 uniform float uDepthRange;
-layout( location = 0 ) out vec4 oField;
+uniform int uLayer;
+uniform sampler2D uPrev0;
+uniform sampler2D uPrev1;
+uniform sampler2D uPrev2;
+layout( location = 0 ) out vec4 oA;// distance, glyph id, opacity, tint amount
+layout( location = 1 ) out vec4 oB;// tint colour
 void main()
 {
+	if( uLayer > 0 )
+	{
+		ivec2 ip = ivec2( gl_FragCoord.xy );
+		if( texelFetch( uPrev0, ip, 0 ).g == vId )
+			discard;
+		if( uLayer > 1 && texelFetch( uPrev1, ip, 0 ).g == vId )
+			discard;
+		if( uLayer > 2 && texelFetch( uPrev2, ip, 0 ).g == vId )
+			discard;
+	}
 	float dist   = glyphDistancePx();
 	gl_FragDepth = clamp( dist / uDepthRange * 0.5 + 0.5, 0.0, 1.0 );
-	oField       = vec4( dist, vMisc.x, vMisc.y, 1.0 );
-}
-)GLSL";
-
-const std::string kAccumFS = std::string( "#version 410 core\n" ) + kGlyphDistance + R"GLSL(
-uniform float uAttrSoftness;// px
-layout( location = 0 ) out vec4 oAcc0;// w*alpha, w, w*tintAmount, -
-layout( location = 1 ) out vec4 oAcc1;// w*tintAmount*tint.rgb, -
-void main()
-{
-	float dist = glyphDistancePx();
-	float w    = exp( clamp( -dist / uAttrSoftness, -40.0, 40.0 ) );
-	float wt   = w * vTint.a;
-	oAcc0      = vec4( w * vMisc.x, w, wt, 0.0 );
-	oAcc1      = vec4( wt * vTint.rgb, 0.0 );
+	oA           = vec4( dist, vId, vMisc.x, vTint.a );
+	oB           = vec4( vTint.rgb, 1.0 );
 }
 )GLSL";
 
 // ---------------------------------------------------------------------------
-// Pass 2: field -> colour
+// Composite: layers -> colour
+//
+// Opacity per glyph is treated as a threshold: the picture is the integral
+// over t in 0..1 of "the text made of all glyphs with opacity >= t". For one
+// fading glyph that is a cross-fade between the text with and without it, so
+// merged outlines never show a hole where a nearly invisible glyph sits, and
+// nothing jumps when it disappears. A uniform opacity a gives a * text, as
+// before. Only the nearest kLayers glyphs per pixel take part.
 // ---------------------------------------------------------------------------
 const char* kCompositeVS = R"GLSL(#version 410 core
 void main()
@@ -115,12 +129,18 @@ void main()
 )GLSL";
 
 const char* kCompositeFS = R"GLSL(#version 410 core
-uniform sampler2D uField;
-uniform sampler2D uAcc0;
-uniform sampler2D uAcc1;
-uniform float uUseAccum;
+uniform sampler2D uA0;
+uniform sampler2D uA1;
+uniform sampler2D uA2;
+uniform sampler2D uA3;
+uniform sampler2D uB0;
+uniform sampler2D uB1;
+uniform sampler2D uB2;
+uniform sampler2D uB3;
+uniform int uLayers;
 uniform vec2 uFieldSize;
 uniform vec2 uViewportOrigin;
+uniform float uAttrSoftness; // px: colour transition width where glyphs merge
 
 uniform vec4 uFill;          // straight colours
 uniform vec4 uFill2;
@@ -135,7 +155,7 @@ uniform vec4 uOutline2;
 uniform vec3 uOutline1Edges; // width, outer edge, inner edge (px, distance space)
 uniform float uOutline2Width;
 uniform vec4 uShadow;
-uniform vec2 uShadowOffset;  // px, GL orientation (y up)
+uniform ivec2 uShadowOffset; // whole px, GL orientation (y up)
 uniform float uShadowSoftness;
 uniform float uShadowSpread;
 uniform vec4 uGlow;
@@ -145,25 +165,119 @@ uniform float uEdge;         // anti-aliasing width in px
 
 out vec4 oColor;
 
+const float kFar = 1.0e4;
+
 vec4 premul( vec4 c ) { return vec4( c.rgb * c.a, c.a ); }
 float inside( float d, float edge ) { return clamp( 0.5 - ( d - edge ) / uEdge, 0.0, 1.0 ); }// coverage of "d < edge"
 
-float alphaAt( vec4 field, vec4 acc0 )
+// Nearest glyphs at one pixel: distance, opacity, tint amount, tint colour
+struct Entries
 {
-	return ( uUseAccum > 0.5 && acc0.y > 0.0 ) ? acc0.x / acc0.y : field.g;
+	int n;
+	vec4 a[ 4 ];// distance, id, opacity, tint amount
+	vec3 tint[ 4 ];
+};
+
+void fetchLayer( int k, ivec2 ip, out vec4 a, out vec3 b )
+{
+	if( k == 0 ) { a = texelFetch( uA0, ip, 0 ); b = texelFetch( uB0, ip, 0 ).rgb; }
+	else if( k == 1 ) { a = texelFetch( uA1, ip, 0 ); b = texelFetch( uB1, ip, 0 ).rgb; }
+	else if( k == 2 ) { a = texelFetch( uA2, ip, 0 ); b = texelFetch( uB2, ip, 0 ).rgb; }
+	else { a = texelFetch( uA3, ip, 0 ); b = texelFetch( uB3, ip, 0 ).rgb; }
+}
+
+Entries load( ivec2 ip )
+{
+	Entries e;
+	e.n = 0;
+	if( any( lessThan( ip, ivec2( 0 ) ) ) || any( greaterThanEqual( ip, ivec2( uFieldSize ) ) ) )
+		return e;
+	for( int k = 0; k < 4; ++k )
+	{
+		if( k >= uLayers )
+			break;
+		vec4 a;
+		vec3 b;
+		fetchLayer( k, ip, a, b );
+		if( a.r >= 0.5 * kFar )
+			break;// no further glyph near this pixel
+		e.a[ e.n ]    = a;
+		e.tint[ e.n ] = b;
+		e.n++;
+	}
+	return e;
+}
+
+// Union distance of the glyphs with opacity >= t
+float unionDistance( Entries e, float t )
+{
+	float d = kFar;
+	for( int i = 0; i < 4; ++i )
+		if( i < e.n && e.a[ i ].b >= t )
+			d = min( d, e.a[ i ].r );
+	return d;
+}
+
+// Tint of the glyphs with opacity >= t, blended smoothly where they meet
+vec4 unionTint( Entries e, float t )
+{
+	float wSum = 0.0, wtSum = 0.0;
+	vec3 c     = vec3( 0.0 );
+	for( int i = 0; i < 4; ++i )
+		if( i < e.n && e.a[ i ].b >= t )
+		{
+			float w  = exp( clamp( -e.a[ i ].r / uAttrSoftness, -40.0, 40.0 ) );
+			float wt = w * e.a[ i ].a;
+			wSum += w;
+			wtSum += wt;
+			c += wt * e.tint[ i ];
+		}
+	if( wtSum <= 0.0 || wSum <= 0.0 )
+		return vec4( 0.0 );
+	return vec4( c / wtSum, clamp( wtSum / wSum, 0.0, 1.0 ) );
 }
 
 void main()
 {
-	vec2 frag  = gl_FragCoord.xy - uViewportOrigin;
-	ivec2 ip   = ivec2( frag );
-	vec4 f     = texelFetch( uField, ip, 0 );
-	vec4 acc0  = uUseAccum > 0.5 ? texelFetch( uAcc0, ip, 0 ) : vec4( 0.0 );
-	float d    = f.r;
-	float a    = alphaAt( f, acc0 );
+	vec2 frag = gl_FragCoord.xy - uViewportOrigin;
+	ivec2 ip  = ivec2( frag );
+	Entries ep = load( ip );
+	bool shadowOn = uShadow.a > 0.0;
+	Entries eq;
+	eq.n = 0;
+	if( shadowOn )
+		eq = load( ip - uShadowOffset );
+	if( ep.n == 0 && eq.n == 0 )
+	{
+		oColor = vec4( 0.0 );
+		return;
+	}
 
-	// Fill colour: solid or box gradient, then per-glyph tint
-	vec4 fill = uFill;
+	// Opacity thresholds of all glyphs involved, highest first
+	float th[ 8 ];
+	int nt = 0;
+	for( int i = 0; i < 4; ++i )
+		if( i < ep.n )
+			th[ nt++ ] = ep.a[ i ].b;
+	for( int i = 0; i < 4; ++i )
+		if( i < eq.n )
+			th[ nt++ ] = eq.a[ i ].b;
+	for( int i = 1; i < 8; ++i )
+	{
+		if( i >= nt )
+			break;
+		float v = th[ i ];
+		int j   = i - 1;
+		while( j >= 0 && th[ j ] < v )
+		{
+			th[ j + 1 ] = th[ j ];
+			--j;
+		}
+		th[ j + 1 ] = v;
+	}
+
+	// Fill colour: solid or box gradient (position based, the same for every threshold)
+	vec4 baseFill = uFill;
 	if( uFillMode == 1 )
 	{
 		vec2 s     = vec2( frag.x, uFieldSize.y - frag.y ) - uBlockOrigin;// screen px, y down, relative to anchor
@@ -172,56 +286,54 @@ void main()
 		vec2 halfs = 0.5 * ( uBox.zw - uBox.xy );
 		float ext  = max( abs( halfs.x * uGradDir.x ) + abs( halfs.y * uGradDir.y ), 1e-3 );
 		float t    = clamp( dot( local - c, uGradDir ) / ext * 0.5 + 0.5, 0.0, 1.0 );
-		fill       = mix( uFill, uFill2, t );
-	}
-	if( uUseAccum > 0.5 && acc0.z > 0.0 )
-	{
-		vec3 tint  = texelFetch( uAcc1, ip, 0 ).rgb / acc0.z;
-		float amt  = clamp( acc0.z / acc0.y, 0.0, 1.0 );
-		fill.rgb   = mix( fill.rgb, tint, amt );
+		baseFill   = mix( uFill, uFill2, t );
 	}
 
-	// Text stack: inner layers REPLACE outer ones (mix by coverage), so a
-	// transparent fill shows through (hollow text) and bands have no seams.
-	vec4 text   = vec4( 0.0 );
-	float outer = uOutline1Edges.y;
-	if( uOutline2Width > 0.0 )
+	float outer = uOutline1Edges.y + ( uOutline2Width > 0.0 ? uOutline2Width : 0.0 );
+	vec4 result = vec4( 0.0 );
+	for( int k = 0; k < 8; ++k )
 	{
-		float e = uOutline1Edges.y + uOutline2Width;
-		text    = mix( text, premul( uOutline2 ), inside( d, e ) );
-		outer   = e;
-	}
-	if( uOutline1Edges.x > 0.0 )
-		text = mix( text, premul( uOutline1 ), inside( d, uOutline1Edges.y ) );
-	text = mix( text, premul( fill ), inside( d, uOutline1Edges.z ) );
-	text *= a;
+		if( k >= nt )
+			break;
+		float t      = th[ k ];
+		float weight = t - ( k + 1 < nt ? th[ k + 1 ] : 0.0 );
+		if( weight <= 0.0 )
+			continue;
+		float d = unionDistance( ep, t );
 
-	// Effects behind the text
-	vec4 back = vec4( 0.0 );
-	if( uShadow.a > 0.0 )
-	{
-		vec2 p = ( frag - uShadowOffset ) / uFieldSize;
-		if( all( greaterThanEqual( p, vec2( 0.0 ) ) ) && all( lessThanEqual( p, vec2( 1.0 ) ) ) )
+		vec4 fill = baseFill;
+		vec4 tint = unionTint( ep, t );
+		fill.rgb  = mix( fill.rgb, tint.rgb, tint.a );
+
+		// Text stack: inner layers REPLACE outer ones (mix by coverage), so a
+		// transparent fill shows through (hollow text) and bands have no seams.
+		vec4 text = vec4( 0.0 );
+		if( uOutline2Width > 0.0 )
+			text = mix( text, premul( uOutline2 ), inside( d, outer ) );
+		if( uOutline1Edges.x > 0.0 )
+			text = mix( text, premul( uOutline1 ), inside( d, uOutline1Edges.y ) );
+		text = mix( text, premul( fill ), inside( d, uOutline1Edges.z ) );
+
+		// Effects behind the text
+		vec4 back = vec4( 0.0 );
+		if( shadowOn )
 		{
-			vec4 fs   = texture( uField, p );
-			vec4 as0  = uUseAccum > 0.5 ? texture( uAcc0, p ) : vec4( 0.0 );
-			float w   = max( uShadowSoftness, uEdge );
-			float ds  = fs.r - outer - uShadowSpread;
-			back      = premul( uShadow ) * ( 1.0 - smoothstep( -0.5 * w, 0.5 * w, ds ) ) * alphaAt( fs, as0 );
+			float w  = max( uShadowSoftness, uEdge );
+			float ds = unionDistance( eq, t ) - outer - uShadowSpread;
+			back     = premul( uShadow ) * ( 1.0 - smoothstep( -0.5 * w, 0.5 * w, ds ) );
 		}
-	}
-	if( uGlowRadius > 0.0 && uGlowStrength > 0.0 && uGlow.a > 0.0 )
-	{
-		float g  = max( d - outer, 0.0 );
-		float k  = clamp( 1.0 - g / uGlowRadius, 0.0, 1.0 );
-		float ga = clamp( uGlowStrength * k * k, 0.0, 1.0 ) * a;
-		vec4 gc  = premul( uGlow ) * ga;
-		back     = gc + back * ( 1.0 - gc.a );
-	}
-	// Effects are knocked out under the text silhouette (Photoshop's default).
-	back *= 1.0 - inside( d, outer ) * a;
+		if( uGlowRadius > 0.0 && uGlowStrength > 0.0 && uGlow.a > 0.0 )
+		{
+			float g  = max( d - outer, 0.0 );
+			float kk = clamp( 1.0 - g / uGlowRadius, 0.0, 1.0 );
+			vec4 gc  = premul( uGlow ) * clamp( uGlowStrength * kk * kk, 0.0, 1.0 );
+			back     = gc + back * ( 1.0 - gc.a );
+		}
+		// Effects are knocked out under the text silhouette (Photoshop's default).
+		back *= 1.0 - inside( d, outer );
 
-	vec4 result = text + back * ( 1.0 - text.a );
+		result += weight * ( text + back * ( 1.0 - text.a ) );
+	}
 	if( result.a > 0.0 )
 		result.rgb /= result.a;// Resolume composites sources as straight alpha
 	oColor = result;
@@ -295,7 +407,7 @@ void* currentContextKey()
 struct StateGuard
 {
 	GLint drawFbo = 0, readFbo = 0, viewport[ 4 ]{}, scissorBox[ 4 ]{}, program = 0, vao = 0, arrayBuffer = 0;
-	GLint activeTex = 0, tex[ 3 ]{};
+	GLint activeTex = 0, tex[ 8 ]{};
 	GLboolean blend = 0, depthTest = 0, scissor = 0, cull = 0, depthMask = 1;
 	GLint depthFunc = GL_LESS, blendSrcRGB = GL_ONE, blendDstRGB = GL_ZERO, blendSrcA = GL_ONE, blendDstA = GL_ZERO, blendEqRGB = GL_FUNC_ADD, blendEqA = GL_FUNC_ADD;
 	GLfloat clearColor[ 4 ]{};
@@ -311,7 +423,7 @@ struct StateGuard
 		glGetIntegerv( GL_VERTEX_ARRAY_BINDING, &vao );
 		glGetIntegerv( GL_ARRAY_BUFFER_BINDING, &arrayBuffer );
 		glGetIntegerv( GL_ACTIVE_TEXTURE, &activeTex );
-		for( int i = 0; i < 3; ++i )
+		for( int i = 0; i < 8; ++i )
 		{
 			glActiveTexture( GL_TEXTURE0 + i );
 			glGetIntegerv( GL_TEXTURE_BINDING_2D, &tex[ i ] );
@@ -340,7 +452,7 @@ struct StateGuard
 		glUseProgram( (GLuint)program );
 		glBindVertexArray( (GLuint)vao );
 		glBindBuffer( GL_ARRAY_BUFFER, (GLuint)arrayBuffer );
-		for( int i = 2; i >= 0; --i )
+		for( int i = 7; i >= 0; --i )
 		{
 			glActiveTexture( GL_TEXTURE0 + i );
 			glBindTexture( GL_TEXTURE_2D, (GLuint)tex[ i ] );
@@ -414,14 +526,65 @@ void setScissor( const Rect& r, int vpX, int vpY, int w, int h )
 }//namespace
 
 // ---------------------------------------------------------------------------
-// Programs are compiled once per GL context and shared by all plugin
-// instances (compiling on every new clip caused a visible hitch).
+// Programs and scratch render targets exist once per GL context and are shared
+// by all plugin instances: instances in one context render one after another,
+// and nothing in the targets survives a render() call.
 // ---------------------------------------------------------------------------
 struct TextRenderer::SharedPrograms
 {
 	void* context = nullptr;
-	GLuint field = 0, accum = 0, composite = 0;
-	int refs     = 0;
+	GLuint field = 0, composite = 0;
+	int refs = 0;
+
+	// Layer k: A = distance, glyph id, opacity, tint amount (RGBA16F); B = tint colour (RGBA8)
+	GLuint layerFbo[ kLayers ]{}, layerA[ kLayers ]{}, layerB[ kLayers ]{};
+	GLuint depth = 0;
+	int w = 0, h = 0;
+
+	void releaseTargets()
+	{
+		glDeleteFramebuffers( kLayers, layerFbo );
+		glDeleteTextures( kLayers, layerA );
+		glDeleteTextures( kLayers, layerB );
+		if( depth )
+			glDeleteRenderbuffers( 1, &depth );
+		for( int k = 0; k < kLayers; ++k )
+			layerFbo[ k ] = layerA[ k ] = layerB[ k ] = 0;
+		depth = 0;
+		w = h = 0;
+	}
+
+	// Grows (never shrinks) to the largest viewport seen in this context.
+	bool ensureTargets( int needW, int needH )
+	{
+		if( layerFbo[ 0 ] && needW <= w && needH <= h )
+			return true;
+		const int nw = std::max( needW, w ), nh = std::max( needH, h );
+		releaseTargets();
+		glGenRenderbuffers( 1, &depth );
+		glBindRenderbuffer( GL_RENDERBUFFER, depth );
+		glRenderbufferStorage( GL_RENDERBUFFER, GL_DEPTH_COMPONENT32F, nw, nh );
+		glBindRenderbuffer( GL_RENDERBUFFER, 0 );
+		bool ok = true;
+		glGenFramebuffers( kLayers, layerFbo );
+		for( int k = 0; k < kLayers; ++k )
+		{
+			layerA[ k ] = makeTexture( GL_RGBA16F, GL_RGBA, GL_HALF_FLOAT, nw, nh, GL_NEAREST );
+			layerB[ k ] = makeTexture( GL_RGBA8, GL_RGBA, GL_UNSIGNED_BYTE, nw, nh, GL_NEAREST );
+			glBindFramebuffer( GL_FRAMEBUFFER, layerFbo[ k ] );
+			glFramebufferTexture2D( GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, layerA[ k ], 0 );
+			glFramebufferTexture2D( GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_2D, layerB[ k ], 0 );
+			glFramebufferRenderbuffer( GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, depth );
+			const GLenum bufs[] = { GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1 };
+			glDrawBuffers( 2, bufs );
+			ok = ok && glCheckFramebufferStatus( GL_FRAMEBUFFER ) == GL_FRAMEBUFFER_COMPLETE;
+		}
+		w = nw;
+		h = nh;
+		if( !ok )
+			FFGLLog::LogToHost( "Text+: offscreen framebuffer incomplete" );
+		return ok;
+	}
 };
 
 namespace
@@ -483,14 +646,11 @@ bool TextRenderer::init()
 			auto* sp      = new SharedPrograms();
 			sp->context   = ctx;
 			sp->field     = linkProgram( kGlyphVS, kFieldFS.c_str() );
-			sp->accum     = linkProgram( kGlyphVS, kAccumFS.c_str() );
 			sp->composite = linkProgram( kCompositeVS, kCompositeFS );
-			if( !sp->field || !sp->accum || !sp->composite )
+			if( !sp->field || !sp->composite )
 			{
 				if( sp->field )
 					glDeleteProgram( sp->field );
-				if( sp->accum )
-					glDeleteProgram( sp->accum );
 				if( sp->composite )
 					glDeleteProgram( sp->composite );
 				delete sp;
@@ -541,8 +701,8 @@ void TextRenderer::release()
 		if( --programs->refs == 0 )
 		{
 			glDeleteProgram( programs->field );
-			glDeleteProgram( programs->accum );
 			glDeleteProgram( programs->composite );
+			programs->releaseTargets();
 			g_programs.erase( std::remove( g_programs.begin(), g_programs.end(), programs ), g_programs.end() );
 			delete programs;
 		}
@@ -556,57 +716,8 @@ void TextRenderer::release()
 		glDeleteBuffers( 1, &cornerVbo );
 	if( instanceVbo )
 		glDeleteBuffers( 1, &instanceVbo );
-	GLuint fbos[] = { fieldFbo, accumFbo };
-	glDeleteFramebuffers( 2, fbos );
-	GLuint texs[] = { fieldTex, accumTex0, accumTex1 };
-	glDeleteTextures( 3, texs );
-	if( fieldDepth )
-		glDeleteRenderbuffers( 1, &fieldDepth );
 	glyphVao = emptyVao = cornerVbo = instanceVbo = 0;
-	fieldFbo = fieldTex = fieldDepth = accumFbo = accumTex0 = accumTex1 = 0;
-	targetW = targetH = 0;
-	instanceCapacity  = 0;
-}
-
-bool TextRenderer::ensureTargets( int w, int h )
-{
-	if( fieldFbo && w == targetW && h == targetH )
-		return true;
-	GLuint fbos[] = { fieldFbo, accumFbo };
-	glDeleteFramebuffers( 2, fbos );
-	GLuint texs[] = { fieldTex, accumTex0, accumTex1 };
-	glDeleteTextures( 3, texs );
-	if( fieldDepth )
-		glDeleteRenderbuffers( 1, &fieldDepth );
-
-	fieldTex  = makeTexture( GL_RGBA16F, GL_RGBA, GL_HALF_FLOAT, w, h, GL_LINEAR );
-	accumTex0 = makeTexture( GL_RGBA32F, GL_RGBA, GL_FLOAT, w, h, GL_NEAREST );
-	accumTex1 = makeTexture( GL_RGBA32F, GL_RGBA, GL_FLOAT, w, h, GL_NEAREST );
-
-	glGenRenderbuffers( 1, &fieldDepth );
-	glBindRenderbuffer( GL_RENDERBUFFER, fieldDepth );
-	glRenderbufferStorage( GL_RENDERBUFFER, GL_DEPTH_COMPONENT32F, w, h );
-	glBindRenderbuffer( GL_RENDERBUFFER, 0 );
-
-	glGenFramebuffers( 1, &fieldFbo );
-	glBindFramebuffer( GL_FRAMEBUFFER, fieldFbo );
-	glFramebufferTexture2D( GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, fieldTex, 0 );
-	glFramebufferRenderbuffer( GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, fieldDepth );
-	bool ok = glCheckFramebufferStatus( GL_FRAMEBUFFER ) == GL_FRAMEBUFFER_COMPLETE;
-
-	glGenFramebuffers( 1, &accumFbo );
-	glBindFramebuffer( GL_FRAMEBUFFER, accumFbo );
-	glFramebufferTexture2D( GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, accumTex0, 0 );
-	glFramebufferTexture2D( GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_2D, accumTex1, 0 );
-	const GLenum bufs[] = { GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1 };
-	glDrawBuffers( 2, bufs );
-	ok = ok && glCheckFramebufferStatus( GL_FRAMEBUFFER ) == GL_FRAMEBUFFER_COMPLETE;
-
-	targetW = w;
-	targetH = h;
-	if( !ok )
-		FFGLLog::LogToHost( "Text+: offscreen framebuffer incomplete" );
-	return ok;
+	instanceCapacity = 0;
 }
 
 void TextRenderer::render( const FFGLViewportStruct& vp, GLuint hostFbo, const std::vector< GlyphInstance >& glyphs, const BlockTransform& t,
@@ -628,12 +739,13 @@ void TextRenderer::render( const FFGLViewportStruct& vp, GLuint hostFbo, const s
 	glScissor( (GLint)vp.x, (GLint)vp.y, w, h );
 	glClearColor( 0, 0, 0, 0 );
 	glClear( GL_COLOR_BUFFER_BIT );
-	if( glyphs.empty() || !atlasTexture || !ensureTargets( w, h ) )
+	if( glyphs.empty() || !atlasTexture || !programs->ensureTargets( w, h ) )
 		return;
 
 	// Screen-space bounding box of all quads (they already include the effect reach).
 	Rect bbox;
-	bool needAccum = false;
+	bool alphaVaries = false, tintVaries = false;
+	const GlyphInstance& g0 = glyphs.front();
 	for( const GlyphInstance& g : glyphs )
 	{
 		const float c = std::cos( g.rotation ), s = std::sin( g.rotation );
@@ -646,20 +758,27 @@ void TextRenderer::render( const FFGLViewportStruct& vp, GLuint hostFbo, const s
 				float rx = c * lx - s * ly + g.x, ry = s * lx + c * ly + g.y;
 				bbox.add( blockCos * rx - blockSin * ry + t.originX, blockSin * rx + blockCos * ry + t.originY );
 			}
-		needAccum = needAccum || g.alpha < 0.999f || g.tintAmount > 0.0f;
+		alphaVaries = alphaVaries || std::fabs( g.alpha - g0.alpha ) > 1e-4f;
+		tintVaries  = tintVaries || g.tintAmount != g0.tintAmount || g.tintR != g0.tintR || g.tintG != g0.tintG || g.tintB != g0.tintB;
 	}
 	if( bbox.empty() )
 		return;
+	// Glyphs of different opacity need the nearest few glyphs per pixel; different
+	// tints need two for smooth colour transitions; otherwise the nearest is enough.
+	const int layers = alphaVaries ? kLayers : tintVaries ? 2 : 1;
+
 	bbox = Rect{ bbox.x0 - 2, bbox.y0 - 2, bbox.x1 + 2, bbox.y1 + 2 };
 	const bool shadow = style.shadow.a > 0;
-	Rect shadedArea = bbox;// what pass 2 writes
+	// Whole pixels, so the shadow reads the layers texel-exact.
+	const int shadowDx = (int)std::lround( style.shadowDx ), shadowDy = (int)std::lround( style.shadowDy );
+	Rect shadedArea = bbox;// what the composite writes
 	if( shadow )
-		shadedArea.add( bbox.shifted( style.shadowDx, style.shadowDy ) );
-	Rect fieldArea = shadedArea;// what pass 2 reads
+		shadedArea.add( bbox.shifted( (float)shadowDx, (float)shadowDy ) );
+	Rect fieldArea = shadedArea;// what the composite reads
 	if( shadow )
-		fieldArea.add( shadedArea.shifted( -style.shadowDx, -style.shadowDy ) );
+		fieldArea.add( shadedArea.shifted( (float)-shadowDx, (float)-shadowDy ) );
 
-	// ---- Pass 1: distance field of the union ----
+	// ---- Field passes: per pixel the nearest `layers` glyphs ----
 	glBindVertexArray( glyphVao );
 	glBindBuffer( GL_ARRAY_BUFFER, instanceVbo );
 	if( glyphs.size() > instanceCapacity )
@@ -668,70 +787,69 @@ void TextRenderer::render( const FFGLViewportStruct& vp, GLuint hostFbo, const s
 		glBufferData( GL_ARRAY_BUFFER, instanceCapacity * sizeof( GlyphInstance ), nullptr, GL_DYNAMIC_DRAW );
 	}
 	glBufferSubData( GL_ARRAY_BUFFER, 0, glyphs.size() * sizeof( GlyphInstance ), glyphs.data() );
+
+	const GLuint fp = programs->field;
+	glUseProgram( fp );
+	glUniform2f( glGetUniformLocation( fp, "uViewport" ), (float)w, (float)h );
+	glUniform2f( glGetUniformLocation( fp, "uOrigin" ), t.originX, t.originY );
+	glUniform2f( glGetUniformLocation( fp, "uBlockRot" ), blockCos, blockSin );
+	glUniform1f( glGetUniformLocation( fp, "uSize" ), t.sizePx );
+	glUniform2f( glGetUniformLocation( fp, "uAtlasSize" ), (float)atlasSize, (float)atlasSize );
+	glUniform1f( glGetUniformLocation( fp, "uSharpCorners" ), style.sharpCorners ? 1.0f : 0.0f );
+	glUniform1f( glGetUniformLocation( fp, "uDepthRange" ), 16384.0f );
+	glUniform1i( glGetUniformLocation( fp, "uAtlas" ), 0 );
+	glUniform1i( glGetUniformLocation( fp, "uPrev0" ), 1 );
+	glUniform1i( glGetUniformLocation( fp, "uPrev1" ), 2 );
+	glUniform1i( glGetUniformLocation( fp, "uPrev2" ), 3 );
 	glActiveTexture( GL_TEXTURE0 );
 	glBindTexture( GL_TEXTURE_2D, atlasTexture );
 
-	auto setGlyphUniforms = [ & ]( GLuint prog ) {
-		glUseProgram( prog );
-		glUniform2f( glGetUniformLocation( prog, "uViewport" ), (float)w, (float)h );
-		glUniform2f( glGetUniformLocation( prog, "uOrigin" ), t.originX, t.originY );
-		glUniform2f( glGetUniformLocation( prog, "uBlockRot" ), blockCos, blockSin );
-		glUniform1f( glGetUniformLocation( prog, "uSize" ), t.sizePx );
-		glUniform2f( glGetUniformLocation( prog, "uAtlasSize" ), (float)atlasSize, (float)atlasSize );
-		glUniform1f( glGetUniformLocation( prog, "uSharpCorners" ), style.sharpCorners ? 1.0f : 0.0f );
-		glUniform1i( glGetUniformLocation( prog, "uAtlas" ), 0 );
-	};
-
-	glBindFramebuffer( GL_FRAMEBUFFER, fieldFbo );
 	glViewport( 0, 0, w, h );
 	setScissor( fieldArea, 0, 0, w, h );
-	glClearColor( 1.0e4f, 0.0f, 0.0f, 0.0f );// "far away", alpha 0
-	glClearDepth( 1.0 );
-	glDepthMask( GL_TRUE );
-	glClear( GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT );
 	glEnable( GL_DEPTH_TEST );
 	glDepthFunc( GL_LESS );
-	setGlyphUniforms( programs->field );
-	glUniform1f( glGetUniformLocation( programs->field, "uDepthRange" ), 16384.0f );
-	glDrawArraysInstanced( GL_TRIANGLE_STRIP, 0, 4, (GLsizei)glyphs.size() );
+	glDepthMask( GL_TRUE );
+	glClearDepth( 1.0 );
+	for( int k = 0; k < layers; ++k )
+	{
+		glBindFramebuffer( GL_FRAMEBUFFER, programs->layerFbo[ k ] );
+		const GLfloat farA[] = { 1.0e4f, -1.0f, 0.0f, 0.0f }, zeroB[] = { 0, 0, 0, 0 };
+		glClearBufferfv( GL_COLOR, 0, farA );
+		glClearBufferfv( GL_COLOR, 1, zeroB );
+		glClear( GL_DEPTH_BUFFER_BIT );
+		for( int j = 0; j < 3; ++j )
+		{
+			glActiveTexture( GL_TEXTURE1 + j );
+			glBindTexture( GL_TEXTURE_2D, j < k ? programs->layerA[ j ] : 0 );
+		}
+		glUniform1i( glGetUniformLocation( fp, "uLayer" ), k );
+		glDrawArraysInstanced( GL_TRIANGLE_STRIP, 0, 4, (GLsizei)glyphs.size() );
+	}
 	glDisable( GL_DEPTH_TEST );
 
-	// ---- Pass 1b: smooth per-glyph attributes (only when they differ) ----
-	if( needAccum )
-	{
-		glBindFramebuffer( GL_FRAMEBUFFER, accumFbo );
-		glClearColor( 0, 0, 0, 0 );
-		glClear( GL_COLOR_BUFFER_BIT );
-		glEnable( GL_BLEND );
-		glBlendEquation( GL_FUNC_ADD );
-		glBlendFunc( GL_ONE, GL_ONE );
-		setGlyphUniforms( programs->accum );
-		// Transition width between neighbouring glyphs: grows with the outline so
-		// merged outlines fade smoothly from one glyph's opacity to the next.
-		const float soft = std::max( 1.0f, 0.3f * style.outerEdge() + 0.01f * t.sizePx );
-		glUniform1f( glGetUniformLocation( programs->accum, "uAttrSoftness" ), soft );
-		glDrawArraysInstanced( GL_TRIANGLE_STRIP, 0, 4, (GLsizei)glyphs.size() );
-		glDisable( GL_BLEND );
-	}
-
-	// ---- Pass 2: composite into the host framebuffer ----
+	// ---- Composite into the host framebuffer ----
 	glBindFramebuffer( GL_FRAMEBUFFER, hostFbo );
 	glViewport( (GLint)vp.x, (GLint)vp.y, w, h );
 	setScissor( shadedArea, (int)vp.x, (int)vp.y, w, h );
 	const GLuint prog = programs->composite;
 	glUseProgram( prog );
-	glActiveTexture( GL_TEXTURE0 );
-	glBindTexture( GL_TEXTURE_2D, fieldTex );
-	glActiveTexture( GL_TEXTURE1 );
-	glBindTexture( GL_TEXTURE_2D, accumTex0 );
-	glActiveTexture( GL_TEXTURE2 );
-	glBindTexture( GL_TEXTURE_2D, accumTex1 );
-	glUniform1i( glGetUniformLocation( prog, "uField" ), 0 );
-	glUniform1i( glGetUniformLocation( prog, "uAcc0" ), 1 );
-	glUniform1i( glGetUniformLocation( prog, "uAcc1" ), 2 );
-	glUniform1f( glGetUniformLocation( prog, "uUseAccum" ), needAccum ? 1.0f : 0.0f );
+	const char* aNames[ kLayers ] = { "uA0", "uA1", "uA2", "uA3" };
+	const char* bNames[ kLayers ] = { "uB0", "uB1", "uB2", "uB3" };
+	for( int k = 0; k < kLayers; ++k )
+	{
+		glActiveTexture( GL_TEXTURE0 + k );
+		glBindTexture( GL_TEXTURE_2D, programs->layerA[ k ] );
+		glActiveTexture( GL_TEXTURE0 + kLayers + k );
+		glBindTexture( GL_TEXTURE_2D, programs->layerB[ k ] );
+		glUniform1i( glGetUniformLocation( prog, aNames[ k ] ), k );
+		glUniform1i( glGetUniformLocation( prog, bNames[ k ] ), kLayers + k );
+	}
+	glUniform1i( glGetUniformLocation( prog, "uLayers" ), layers );
 	glUniform2f( glGetUniformLocation( prog, "uFieldSize" ), (float)w, (float)h );
 	glUniform2f( glGetUniformLocation( prog, "uViewportOrigin" ), (float)vp.x, (float)vp.y );
+	// Transition width between neighbouring glyphs' colours: grows with the outline
+	// so merged outlines change colour smoothly from one glyph to the next.
+	glUniform1f( glGetUniformLocation( prog, "uAttrSoftness" ), std::max( 1.0f, 0.3f * style.outerEdge() + 0.01f * t.sizePx ) );
 
 	float w1 = style.outline1Width, outerEdge = 0, innerEdge = 0;
 	switch( style.outline1Position )
@@ -762,7 +880,7 @@ void TextRenderer::render( const FFGLViewportStruct& vp, GLuint hostFbo, const s
 	glUniform3f( glGetUniformLocation( prog, "uOutline1Edges" ), w1, outerEdge, innerEdge );
 	glUniform1f( glGetUniformLocation( prog, "uOutline2Width" ), style.outline2Width );
 	setColor( prog, "uShadow", style.shadow );
-	glUniform2f( glGetUniformLocation( prog, "uShadowOffset" ), style.shadowDx, -style.shadowDy );
+	glUniform2i( glGetUniformLocation( prog, "uShadowOffset" ), shadowDx, -shadowDy );
 	glUniform1f( glGetUniformLocation( prog, "uShadowSoftness" ), style.shadowSoftness );
 	glUniform1f( glGetUniformLocation( prog, "uShadowSpread" ), style.shadowSpread );
 	setColor( prog, "uGlow", style.glow );

@@ -34,7 +34,7 @@ CFFGLPluginInfo PluginInfo( PluginFactory< TextSource >,// create method
 							2,                           // plugin minor
 							FF_SOURCE,
 							"Text source with distance-field outlines, shadows, glow and per-character animation",
-							"Text+ 0.4",
+							"Text+ 0.5",
 							0, nullptr, initialiseLibrary, nullptr );
 
 const char* kGroupText     = "Text";

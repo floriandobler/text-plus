@@ -6,7 +6,7 @@ Schatten und Glow entstehen ohne Blur-Pässe, die Kanten bleiben in jeder Größ
 scharf, und zwei Animatoren bewegen, skalieren, drehen, blenden und färben den
 Text pro Zeichen, Wort oder Zeile.
 
-Stand: Version 0.4. macOS zuerst (Universal Binary), Windows vorbereitet.
+Stand: Version 0.5. macOS zuerst (Universal Binary), Windows vorbereitet.
 
 ## Bauen und installieren (macOS)
 
@@ -87,14 +87,16 @@ src/core/     plattformneutraler Kern, ohne FFGL und OpenGL
   Animator       Glyph-Zustände als reine Funktion von Progress/Beat
 src/render/   OpenGL 4.1 Core
   GlyphAtlas     RGBA16F-Atlas pro Instanz, wächst bis 4096²
-  TextRenderer   Pass 1: Distanzfeld der Vereinigung (Depth = min. Abstand)
-                 Pass 1b: Deckkraft/Farbe pro Glyphe, weich gewichtet (nur bei Bedarf)
-                 Pass 2: Fill, 2 Outlines, Schatten, Glow; nur in der Text-Bounding-Box
+  TextRenderer   Feld-Pässe: Distanzfeld der Vereinigung (Depth = min. Abstand); bei
+                 unterschiedlicher Deckkraft die 4 nächsten Glyphen pro Pixel (Depth Peeling)
+                 Composite: Fill, 2 Outlines, Schatten, Glow; Deckkraft als Schwellen-
+                 Integral, damit ausblendende Zeichen nahtlos aus verschmolzenen Konturen
+                 verschwinden; nur in der Text-Bounding-Box
 src/plugin/   FFGL-Adapter (Parameter, Presets, Slides, Events, dynamische Listen)
 tests/        Unit-Tests + Headless-FFGL-Host (Linux/EGL)
 ```
 
-Shader werden einmal pro GL-Kontext kompiliert und von allen Instanzen geteilt.
+Shader und Zwischenpuffer gibt es einmal pro GL-Kontext, alle Instanzen teilen sie.
 Die Ausgabe ist straight alpha, so wie Resolume Sources verrechnet.
 
 Menüs, die etwas auslösen (Presets, Family, Style), und die Slide-Position
@@ -121,7 +123,7 @@ Plugin wie Resolume über `plugMain`, rendert in einem OpenGL-4.1-Core-Kontext
 # jeden Frame alle Werte erneut, "@trace=…" und "@dump=dir" zeigen jeden Frame.
 ```
 
-## Bekannte Grenzen (Version 0.4)
+## Bekannte Grenzen (Version 0.5)
 
 - Resolumes Textfeld für Plugins ist einzeilig: Zeilen per `|` trennen oder eine
   Text-Datei verwenden.

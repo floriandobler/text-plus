@@ -1,19 +1,17 @@
 #pragma once
 // TextRenderer: the GPU passes.
 //
-//  Pass 1 (field): every glyph is an instanced quad. The fragment shader reads
+//  Field passes: every glyph is an instanced quad. The fragment shader reads
 //  the glyph's MTSDF and writes the signed distance to the outline in output
-//  pixels (outside positive). The depth test keeps the smallest distance per
-//  pixel: the distance field of the UNION of all glyphs.
+//  pixels (outside positive) plus the glyph's opacity and tint. The depth test
+//  keeps the smallest distance per pixel: the distance field of the UNION of
+//  all glyphs. When glyphs differ in opacity or colour, further passes peel
+//  the 2nd..4th nearest glyph per pixel (depth peeling by glyph id).
 //
-//  Pass 1b (attributes, only when glyphs differ in opacity or colour): the
-//  same quads again, additively blended, accumulate per-glyph opacity and
-//  colour tint weighted by exp(-distance / softness). Where outlines of
-//  neighbouring glyphs merge, their attributes blend smoothly instead of
-//  switching hard at the half-way line ("cut-apart" outlines while fading).
-//
-//  Pass 2 (composite): one full-screen triangle (scissored to the text's
-//  bounding box) turns the field into fill, two outlines, shadow and glow.
+//  Composite: one full-screen triangle (scissored to the text's bounding box)
+//  turns the layers into fill, two outlines, shadow and glow. Opacity is
+//  integrated as a threshold (see kCompositeFS), so a fading glyph leaves
+//  merged outlines smoothly instead of punching a hole into them.
 //
 // Everything outside the text's bounding box is cleared and never shaded.
 
@@ -90,6 +88,8 @@ struct BlockTransform
 class TextRenderer
 {
 public:
+	static constexpr int kLayers = 4;// nearest glyphs per pixel when opacities differ
+
 	bool init();
 	void release();
 	bool isReady() const { return programs != nullptr; }
@@ -101,15 +101,10 @@ public:
 	struct SharedPrograms;// compiled once per GL context, shared by all instances
 
 private:
-	bool ensureTargets( int w, int h );
-
-	SharedPrograms* programs = nullptr;
+	SharedPrograms* programs = nullptr;// programs and scratch targets, shared per GL context
 	GLuint glyphVao = 0, cornerVbo = 0, instanceVbo = 0;
 	GLuint emptyVao = 0;
 	size_t instanceCapacity = 0;
-	GLuint fieldFbo = 0, fieldTex = 0, fieldDepth = 0;
-	GLuint accumFbo = 0, accumTex0 = 0, accumTex1 = 0;
-	int targetW = 0, targetH = 0;
 };
 
 }//namespace textplus
