@@ -11,7 +11,7 @@
 
 #include <msdfgen.h>
 
-namespace kontur
+namespace textplus
 {
 namespace
 {
@@ -254,7 +254,8 @@ GlyphCache::~GlyphCache()
 	{
 		std::lock_guard< std::mutex > lock( mutex );
 		quit = true;
-		queue.clear();
+		urgentQueue.clear();
+		backgroundQueue.clear();
 	}
 	cv.notify_all();
 	for( auto& t : workers )
@@ -262,7 +263,7 @@ GlyphCache::~GlyphCache()
 			t.join();
 }
 
-std::shared_ptr< const GlyphBitmap > GlyphCache::get( const std::shared_ptr< FontFace >& face, uint32_t glyph, int level )
+std::shared_ptr< const GlyphBitmap > GlyphCache::get( const std::shared_ptr< FontFace >& face, uint32_t glyph, int level, bool urgent )
 {
 	if( !face )
 		return nullptr;
@@ -272,10 +273,20 @@ std::shared_ptr< const GlyphBitmap > GlyphCache::get( const std::shared_ptr< Fon
 	if( it != entries.end() )
 	{
 		it->second.lastUse = ++useCounter;
+		if( !it->second.bitmap && urgent )
+		{
+			// Requested in the background before, needed on screen now: move it up.
+			auto bg = std::find_if( backgroundQueue.begin(), backgroundQueue.end(), [ & ]( const Job& j ) { return j.key == key; } );
+			if( bg != backgroundQueue.end() )
+			{
+				urgentQueue.push_back( std::move( *bg ) );
+				backgroundQueue.erase( bg );
+			}
+		}
 		return it->second.bitmap;// may be null while pending
 	}
 	entries[ key ].lastUse = ++useCounter;
-	queue.push_back( Job{ face, glyph, level, key } );
+	( urgent ? urgentQueue : backgroundQueue ).push_back( Job{ face, glyph, level, key } );
 	cv.notify_one();
 	return nullptr;
 }
@@ -283,7 +294,7 @@ std::shared_ptr< const GlyphBitmap > GlyphCache::get( const std::shared_ptr< Fon
 void GlyphCache::waitIdle()
 {
 	std::unique_lock< std::mutex > lock( mutex );
-	idleCv.wait( lock, [ this ] { return queue.empty() && busy == 0; } );
+	idleCv.wait( lock, [ this ] { return urgentQueue.empty() && backgroundQueue.empty() && busy == 0; } );
 }
 
 void GlyphCache::workerMain()
@@ -293,11 +304,12 @@ void GlyphCache::workerMain()
 		Job job;
 		{
 			std::unique_lock< std::mutex > lock( mutex );
-			cv.wait( lock, [ this ] { return quit || !queue.empty(); } );
+			cv.wait( lock, [ this ] { return quit || !urgentQueue.empty() || !backgroundQueue.empty(); } );
 			if( quit )
 				return;
-			job = std::move( queue.front() );
-			queue.pop_front();
+			std::deque< Job >& q = !urgentQueue.empty() ? urgentQueue : backgroundQueue;
+			job                  = std::move( q.front() );
+			q.pop_front();
 			++busy;
 		}
 
@@ -314,7 +326,7 @@ void GlyphCache::workerMain()
 			}
 			--busy;
 			completed.fetch_add( 1 );
-			if( queue.empty() && busy == 0 )
+			if( urgentQueue.empty() && backgroundQueue.empty() && busy == 0 )
 				idleCv.notify_all();
 		}
 	}
@@ -397,4 +409,4 @@ float halfToFloat( uint16_t h )
 	return f;
 }
 
-}//namespace kontur
+}//namespace textplus

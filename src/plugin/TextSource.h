@@ -1,6 +1,7 @@
 #pragma once
 // TextSource: the FFGL adapter. Owns the parameters, talks to Resolume
-// (dynamic dropdowns, visibility, value events) and drives the core + renderer.
+// (dynamic dropdowns, visibility, value events, presets) and drives the core
+// and the renderer.
 
 #include <FFGLSDK.h>
 
@@ -11,18 +12,52 @@
 #include "render/GlyphAtlas.h"
 #include "render/TextRenderer.h"
 
+#include <chrono>
 #include <memory>
 #include <string>
 #include <vector>
 
-namespace kontur
+namespace textplus
 {
+
+// Parameters of one animator, in order. Animator 2 repeats the block.
+enum AnimParam : unsigned int
+{
+	AP_PRESET,
+	AP_MODE,
+	AP_UNIT,
+	AP_ORDER,
+	AP_DRIVE,
+	AP_PROGRESS,
+	AP_DURATION,
+	AP_SPREAD,
+	AP_EASE,
+	AP_SPEED,
+	AP_OFFSET_X,
+	AP_OFFSET_Y,
+	AP_SCALE,
+	AP_ROTATION,
+	AP_OPACITY,
+	AP_COLOR_H,
+	AP_COLOR_S,
+	AP_COLOR_B,
+	AP_COLOR_A,
+	AP_COUNT
+};
 
 enum ParamId : unsigned int
 {
 	// Text
 	P_TEXT,
 	P_PIPE_NEWLINE,
+	P_MARKUP,
+	P_TEXT_FILE,
+	P_SLIDES,
+	P_SLIDE,
+	P_ADVANCE,
+	P_BEATS_PER_SLIDE,
+	P_NEXT_SLIDE,
+	P_PREV_SLIDE,
 	// Font
 	P_FONT,
 	P_FAMILY,
@@ -44,10 +79,16 @@ enum ParamId : unsigned int
 	P_KERNING,
 	P_LIGATURES,
 	// Fill
+	P_FILL_MODE,
 	P_FILL_H,
 	P_FILL_S,
 	P_FILL_B,
 	P_FILL_A,
+	P_FILL2_H,
+	P_FILL2_S,
+	P_FILL2_B,
+	P_FILL2_A,
+	P_GRAD_ANGLE,
 	// Outline 1
 	P_OL1_WIDTH,
 	P_OL1_POSITION,
@@ -78,18 +119,18 @@ enum ParamId : unsigned int
 	P_GL_A,
 	P_GL_RADIUS,
 	P_GL_STRENGTH,
-	// Animation
-	P_AN_MODE,
-	P_AN_UNIT,
-	P_AN_PROGRESS,
-	P_AN_SPREAD,
-	P_AN_AMOUNT,
-	P_AN_SPEED,
+	// Animators
+	P_A1,
+	P_A2 = P_A1 + AP_COUNT,
 	// Quality
-	P_EDGE,
+	P_EDGE = P_A2 + AP_COUNT,
+	P_ALPHA_OUT,
 
 	P_COUNT
 };
+
+constexpr int kNumAnimators = 2;
+inline unsigned animParam( int animator, AnimParam p ) { return ( animator == 0 ? P_A1 : P_A2 ) + p; }
 
 class TextSource : public CFFGLPlugin
 {
@@ -106,27 +147,41 @@ public:
 	float GetFloatParameter( unsigned int index ) override;
 	char* GetTextParameter( unsigned int index ) override;
 	char* GetParameterDisplay( unsigned int index ) override;
+	FFResult SetTime( double time ) override;
 	void SetBeatInfo( float bpm, float barPhase ) override;
-
-	// Test hook: lets the headless host wait for fonts/glyphs.
-	bool hasPendingGlyphs() const { return pendingGlyphs; }
 
 private:
 	void defineParameters();
-	void populateFontMenus();// once the font database is ready
-	void syncMenusToFont();  // family/style dropdowns follow the "Font" text field
+	void updateVisibility( bool raiseEvent );
+	void setValue( unsigned id, float v );// change own value + tell the host
+
+	// Fonts
+	void populateFontMenus( bool raiseEvent );
+	void syncMenusToFont();
 	void resolveFont();
 	void onFamilyPicked( int index );
 	void onStylePicked( int index );
 	void setFontText( const std::string& text, bool raiseEvent );
-	LayoutParams currentLayoutParams() const;
+
+	// Text & slides
+	void pollTextFile();
+	std::string currentText();
+	void stepSlide( int delta );
+
+	// Animation
+	void applyPreset( int animator, int preset );
+	AnimatorParams animatorParams( int animator ) const;
+	float animatorProgress( int animator ) const;
+
+	LayoutParams currentLayoutParams( const std::string& text ) const;
 	Style currentStyle() const;
-	AnimParams currentAnimParams() const;
-	void updateVisibility( bool raiseEvent );
+	double currentBeats() const;
 
 	float values[ P_COUNT ]{};
-	std::string text, fontText, fontFile;
+	std::vector< signed char > visibility;// last visibility sent to the host
+	std::string text, fontText, fontFile, textFile;
 	std::string textReturnBuffer, displayBuffer;
+	bool live = false;// first frame rendered: value changes now come from the user
 
 	// Font state
 	std::shared_ptr< FontFace > face;
@@ -134,8 +189,21 @@ private:
 	bool menusPopulated = false;
 	std::vector< std::string > familyMenu;
 	std::vector< FontEntry > styleMenu;
-	std::string styleMenuFamily;
-	bool fileStylesActive = false;// style menu lists the faces of the Font File
+	std::string styleMenuKey;
+
+	// Text file
+	std::string textFileContent;
+	int64_t textFileStamp   = -1;
+	int textFilePollCounter = 0;
+
+	// Slides
+	int slideCount       = 1;
+	int slideIndex       = 0;// shown slide
+	int buttonOffset     = 0;// Next/Previous presses since the Slide parameter last changed
+	int lastSlideShown   = -1;
+	double slideStartBeat = 0.0;
+	std::string lastSlidesSource;
+	std::vector< std::string > slides;
 
 	// Layout cache
 	LayoutParams lastLayoutParams;
@@ -143,21 +211,24 @@ private:
 	LayoutResult layout;
 	bool layoutValid = false;
 
-	// Animation / beat tracking
-	double beats       = 0.0;
+	// Beat tracking
 	float lastBarPhase = -1.0f;
 	double barCount    = 0.0;
 	bool haveBeatInfo  = false;
+	double beatsNow    = 0.0;
+	double lastHostTime = -1.0;
 
 	// GL
 	GlyphAtlas atlas;
 	TextRenderer renderer;
 	std::vector< GlyphState > glyphStates;
 	std::vector< GlyphInstance > instances;
-	bool pendingGlyphs = false;
-	uint64_t prewarmedKey = 0;// face id + spread level whose Latin-1 set was requested
-	bool lastVisibilityBox = true, lastVisibilityOutline2 = true;
-	bool visibilityInitialised = false;
+	uint64_t prewarmedKey = 0;
+
+	// Diagnostics (written to Resolume's log once per instance)
+	std::chrono::steady_clock::time_point createdAt;
+	double initGLMs = 0;
+	bool loggedStartup = false;
 };
 
-}//namespace kontur
+}//namespace textplus

@@ -8,7 +8,7 @@
 #include <hb-ot.h>
 #include <hb.h>
 
-namespace kontur
+namespace textplus
 {
 namespace
 {
@@ -101,4 +101,4 @@ FontFace::~FontFace()
 		hb_blob_destroy( blob );
 }
 
-}//namespace kontur
+}//namespace textplus

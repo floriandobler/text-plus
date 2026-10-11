@@ -10,7 +10,7 @@
 #include <unordered_map>
 #include <vector>
 
-namespace kontur
+namespace textplus
 {
 
 struct AtlasSlot
@@ -54,4 +54,4 @@ private:
 
 uint64_t atlasKey( uint32_t faceId, uint32_t glyph, int level );
 
-}//namespace kontur
+}//namespace textplus

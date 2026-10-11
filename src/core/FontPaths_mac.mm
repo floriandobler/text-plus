@@ -6,7 +6,7 @@
 #import <Foundation/Foundation.h>
 #include <sys/stat.h>
 
-namespace kontur
+namespace textplus
 {
 
 std::vector< std::string > platformFontFiles()
@@ -40,7 +40,7 @@ std::string platformCacheDirectory()
 		NSArray* paths = NSSearchPathForDirectoriesInDomains( NSCachesDirectory, NSUserDomainMask, YES );
 		if( paths.count > 0 )
 		{
-			NSString* path = [paths[ 0 ] stringByAppendingPathComponent:@"KonturText"];
+			NSString* path = [paths[ 0 ] stringByAppendingPathComponent:@"TextPlus"];
 			[[NSFileManager defaultManager] createDirectoryAtPath:path withIntermediateDirectories:YES attributes:nil error:nil];
 			dir = path.fileSystemRepresentation;
 		}
@@ -48,4 +48,4 @@ std::string platformCacheDirectory()
 	return dir;
 }
 
-}//namespace kontur
+}//namespace textplus

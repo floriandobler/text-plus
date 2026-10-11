@@ -21,7 +21,7 @@
 #include <unordered_map>
 #include <vector>
 
-namespace kontur
+namespace textplus
 {
 
 struct SpreadLevel
@@ -51,8 +51,9 @@ class GlyphCache
 public:
 	static GlyphCache& instance();
 
-	// Ready bitmap or nullptr (then generation is scheduled).
-	std::shared_ptr< const GlyphBitmap > get( const std::shared_ptr< FontFace >& face, uint32_t glyph, int level );
+	// Ready bitmap or nullptr (then generation is scheduled). Urgent requests
+	// (glyphs on screen) are generated before background ones (prefetching).
+	std::shared_ptr< const GlyphBitmap > get( const std::shared_ptr< FontFace >& face, uint32_t glyph, int level, bool urgent = true );
 	// Increments whenever a glyph finishes. Lets renderers know when to retry.
 	uint64_t generation() const { return completed.load(); }
 	// Blocks until the queue is empty (tests only).
@@ -83,7 +84,7 @@ private:
 	std::mutex mutex;
 	std::condition_variable cv;
 	std::condition_variable idleCv;
-	std::deque< Job > queue;
+	std::deque< Job > urgentQueue, backgroundQueue;
 	std::unordered_map< uint64_t, Entry > entries;
 	std::vector< std::thread > workers;
 	int busy             = 0;
@@ -101,4 +102,4 @@ std::shared_ptr< GlyphBitmap > generateGlyphBitmap( const std::shared_ptr< FontF
 uint16_t floatToHalf( float f );
 float halfToFloat( uint16_t h );
 
-}//namespace kontur
+}//namespace textplus

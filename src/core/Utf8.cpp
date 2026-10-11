@@ -1,6 +1,6 @@
 #include "Utf8.h"
 
-namespace kontur
+namespace textplus
 {
 
 uint32_t decodeUtf8At( const std::string& s, size_t i, size_t* length )
@@ -115,4 +115,106 @@ std::vector< std::string > splitParagraphs( const std::string& raw, bool pipeIsN
 	return result;
 }
 
-}//namespace kontur
+namespace
+{
+int hexValue( char c )
+{
+	if( c >= '0' && c <= '9' )
+		return c - '0';
+	if( c >= 'a' && c <= 'f' )
+		return c - 'a' + 10;
+	if( c >= 'A' && c <= 'F' )
+		return c - 'A' + 10;
+	return -1;
+}
+
+// Parses "#rgb" or "#rrggbb" (without braces). Returns false if malformed.
+bool parseHexColor( const std::string& s, Rgb& out )
+{
+	if( s.size() != 4 && s.size() != 7 )
+		return false;
+	if( s[ 0 ] != '#' )
+		return false;
+	int v[ 6 ];
+	for( size_t i = 1; i < s.size(); ++i )
+		if( ( v[ i - 1 ] = hexValue( s[ i ] ) ) < 0 )
+			return false;
+	if( s.size() == 4 )
+	{
+		out.r = v[ 0 ] * 17 / 255.0f;
+		out.g = v[ 1 ] * 17 / 255.0f;
+		out.b = v[ 2 ] * 17 / 255.0f;
+	}
+	else
+	{
+		out.r = ( v[ 0 ] * 16 + v[ 1 ] ) / 255.0f;
+		out.g = ( v[ 2 ] * 16 + v[ 3 ] ) / 255.0f;
+		out.b = ( v[ 4 ] * 16 + v[ 5 ] ) / 255.0f;
+	}
+	return true;
+}
+}//namespace
+
+std::vector< MarkedParagraph > parseMarkedText( const std::string& raw, bool pipeIsNewline, bool markup, std::vector< Rgb >& palette )
+{
+	std::vector< MarkedParagraph > result( 1 );
+	int16_t current = -1;
+	auto put        = [ & ]( char c ) {
+		result.back().text.push_back( c );
+		result.back().colorOfByte.push_back( current );
+	};
+	for( size_t i = 0; i < raw.size(); ++i )
+	{
+		char c = raw[ i ];
+		if( c == '\r' )
+		{
+			if( i + 1 < raw.size() && raw[ i + 1 ] == '\n' )
+				++i;
+			result.emplace_back();
+		}
+		else if( c == '\n' )
+			result.emplace_back();
+		else if( c == '\\' && i + 1 < raw.size() && raw[ i + 1 ] == 'n' )
+		{
+			++i;
+			result.emplace_back();
+		}
+		else if( c == '\\' && i + 1 < raw.size() && raw[ i + 1 ] == '\\' )
+		{
+			++i;
+			put( '\\' );
+		}
+		else if( c == '|' && pipeIsNewline )
+			result.emplace_back();
+		else if( c == '{' && markup )
+		{
+			if( i + 1 < raw.size() && raw[ i + 1 ] == '{' )
+			{
+				++i;
+				put( '{' );
+				continue;
+			}
+			size_t close = raw.find( '}', i );
+			std::string tag = close == std::string::npos ? std::string() : raw.substr( i + 1, close - i - 1 );
+			Rgb rgb;
+			if( tag == "/" )
+			{
+				current = -1;
+				i       = close;
+			}
+			else if( parseHexColor( tag, rgb ) && palette.size() < 32000 )
+			{
+				palette.push_back( rgb );
+				current = (int16_t)( palette.size() - 1 );
+				i       = close;
+			}
+			else
+				put( c );// not a tag: keep it
+		}
+		else
+			put( c );
+	}
+	return result;
+}
+
+}//namespace textplus

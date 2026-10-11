@@ -21,7 +21,7 @@
 #include FT_SFNT_NAMES_H
 #include FT_TRUETYPE_TABLES_H
 
-namespace kontur
+namespace textplus
 {
 namespace
 {
@@ -411,8 +411,10 @@ std::optional< FontEntry > FontDatabase::defaultFont() const
 	return std::nullopt;
 }
 
-std::optional< FontEntry > FontDatabase::resolve( const std::string& rawQuery ) const
+std::optional< FontEntry > FontDatabase::resolve( const std::string& rawQuery, bool* matched ) const
 {
+	if( matched )
+		*matched = false;
 	std::string query = trim( rawQuery );
 	if( query.empty() )
 		return defaultFont();
@@ -440,8 +442,10 @@ std::optional< FontEntry > FontDatabase::resolve( const std::string& rawQuery ) 
 			found = f;
 			break;
 		}
-	// 2) "Family Style" typed without slash: longest family that prefixes the query
-	if( found.empty() && slash == std::string::npos )
+	// 2) Part of the style typed into the family ("Family Style", or "DejaVu Sans
+	//    Condensed / Bold" where the family is "DejaVu Sans"): longest family
+	//    that prefixes the query, the rest belongs to the style.
+	if( found.empty() )
 	{
 		size_t bestLen = 0;
 		for( const std::string& f : fams )
@@ -454,7 +458,7 @@ std::optional< FontEntry > FontDatabase::resolve( const std::string& rawQuery ) 
 			}
 		}
 		if( !found.empty() )
-			styleQuery = famNorm.substr( bestLen );
+			styleQuery = famNorm.substr( bestLen ) + styleQuery;
 	}
 	// 3) family starting with the query, then containing it (shortest wins)
 	if( found.empty() && !famNorm.empty() )
@@ -480,6 +484,8 @@ std::optional< FontEntry > FontDatabase::resolve( const std::string& rawQuery ) 
 	std::vector< FontEntry > styles = stylesOf( found );
 	if( styles.empty() )
 		return defaultFont();
+	if( matched )
+		*matched = true;
 
 	std::string styleNorm = normalizeFontName( styleQuery );
 	if( !styleNorm.empty() )
@@ -534,4 +540,4 @@ std::vector< FontEntry > FontDatabase::scanFile( const std::string& path )
 	return out;
 }
 
-}//namespace kontur
+}//namespace textplus

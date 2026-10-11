@@ -147,11 +147,26 @@ int main( int argc, char** argv )
 	const char* outPath = argv[ 2 ];
 	const int W = std::atoi( argv[ 3 ] ), H = std::atoi( argv[ 4 ] );
 	int frames      = 40;
+	int extraInstances = 0;
+	for( int a = 5; a < argc; ++a )
+		if( std::strncmp( argv[ a ], "@instances=", 11 ) == 0 )
+			extraInstances = std::atoi( argv[ a ] + 11 ) - 1;
 	double timeSec  = 0.0;
+	std::vector< std::string > printParams;// "@print=A1 Mode,A1 Preset"
+	double dt       = 0.0;// seconds per frame; > 0 plays time forward and renders exactly @frames frames
 	std::string bg  = "checker";
+	bool straight   = true;// Text+ outputs straight alpha by default (Resolume's convention)
 
 	FFGLViewportStruct vp{ 0, 0, (GLuint)W, (GLuint)H };
+	auto tInst        = std::chrono::steady_clock::now();
 	FFInstanceID inst = (FFInstanceID)call( FF_INSTANTIATE_GL, ptr( &vp ) ).PointerValue;
+	const double instantiateMs = std::chrono::duration< double, std::milli >( std::chrono::steady_clock::now() - tInst ).count();
+	for( int k = 0; k < extraInstances; ++k )
+	{
+		auto t = std::chrono::steady_clock::now();
+		call( FF_INSTANTIATE_GL, ptr( &vp ) );
+		std::printf( "  extra instance %d: %.2f ms\n", k + 1, std::chrono::duration< double, std::milli >( std::chrono::steady_clock::now() - t ).count() );
+	}
 	if( !inst || inst == (FFInstanceID)(uintptr_t)FF_FAIL )
 	{
 		std::fprintf( stderr, "instantiate failed\n" );
@@ -195,9 +210,29 @@ int main( int argc, char** argv )
 		if( eq == std::string::npos )
 			continue;
 		std::string key = arg.substr( 0, eq ), val = arg.substr( eq + 1 );
+		if( key == "@instances" )
+			continue;
 		if( key == "@frames" )
 		{
 			frames = std::atoi( val.c_str() );
+			continue;
+		}
+		if( key == "@print" )
+		{
+			size_t start = 0;
+			while( start <= val.size() )
+			{
+				size_t comma = val.find( ',', start );
+				printParams.push_back( val.substr( start, comma == std::string::npos ? std::string::npos : comma - start ) );
+				if( comma == std::string::npos )
+					break;
+				start = comma + 1;
+			}
+			continue;
+		}
+		if( key == "@dt" )
+		{
+			dt = std::atof( val.c_str() );
 			continue;
 		}
 		if( key == "@time" )
@@ -208,6 +243,11 @@ int main( int argc, char** argv )
 		if( key == "@bg" )
 		{
 			bg = val;
+			continue;
+		}
+		if( key == "@alpha" )
+		{
+			straight = val != "premul";
 			continue;
 		}
 		if( !setParam( key, val ) )
@@ -230,10 +270,10 @@ int main( int argc, char** argv )
 
 	std::vector< unsigned char > pixels( (size_t)W * H * 4 ), previous;
 	int stable = 0, stateErrors = 0;
-	double frameMs = 0;
+	double frameMs = 0, firstFrameMs = -1;
 	for( int f = 0; f < frames; ++f )
 	{
-		double t = timeSec;
+		double t = timeSec + f * dt;
 		call( FF_SET_TIME, ptr( &t ), inst );
 		SetBeatinfoStruct beat{ 120.0f, (float)std::fmod( t * 0.5, 1.0 ) };
 		call( FF_SET_BEATINFO, ptr( &beat ), inst );
@@ -246,6 +286,8 @@ int main( int argc, char** argv )
 		call( FF_PROCESS_OPENGL, ptr( &pgl ), inst );
 		glFinish();
 		frameMs = std::chrono::duration< double, std::milli >( std::chrono::steady_clock::now() - t0 ).count();
+		if( firstFrameMs < 0 )
+			firstFrameMs = frameMs;
 		GLSnapshot after = GLSnapshot::take();
 		if( !( before == after ) )
 			++stateErrors;
@@ -261,15 +303,15 @@ int main( int argc, char** argv )
 			stable = 0;
 		}
 		glReadPixels( 0, 0, W, H, GL_RGBA, GL_UNSIGNED_BYTE, pixels.data() );
-		if( !previous.empty() && previous == pixels && f > 10 )
+		if( dt <= 0.0 && !previous.empty() && previous == pixels && f > 10 )
 		{
-			if( ++stable >= 3 && f > 5 )
+			if( ++stable >= 8 && f > 5 )
 				break;
 		}
 		else
 			stable = 0;
 		previous = pixels;
-		std::this_thread::sleep_for( std::chrono::milliseconds( 15 ) );
+		std::this_thread::sleep_for( std::chrono::milliseconds( dt > 0.0 ? 5 : 15 ) );
 	}
 
 	// Composite the premultiplied output over a background for viewing; flip to top-down.
@@ -279,7 +321,9 @@ int main( int argc, char** argv )
 		{
 			const unsigned char* p = &pixels[ ( (size_t)( H - 1 - y ) * W + x ) * 4 ];
 			float back;
-			if( bg == "black" )
+			if( bg.find( ',' ) != std::string::npos )
+				back = -1.0f;// solid colour, handled per channel below
+			else if( bg == "black" )
 				back = 0.0f;
 			else if( bg == "white" )
 				back = 1.0f;
@@ -288,7 +332,15 @@ int main( int argc, char** argv )
 			float a = p[ 3 ] / 255.0f;
 			for( int c = 0; c < 3; ++c )
 			{
-				float v = p[ c ] / 255.0f + back * ( 1.0f - a );// premultiplied "over"
+				float bgc = back;
+				if( back < 0.0f )
+				{
+					float rgb[ 3 ] = { 0, 0, 0 };
+					std::sscanf( bg.c_str(), "%f,%f,%f", &rgb[ 0 ], &rgb[ 1 ], &rgb[ 2 ] );
+					bgc = rgb[ c ];
+				}
+				float src = p[ c ] / 255.0f * ( straight ? a : 1.0f );
+				float v   = src + bgc * ( 1.0f - a );// "over"
 				out[ ( (size_t)y * W + x ) * 3 + c ] = (unsigned char)std::lround( std::fmin( 1.0f, v ) * 255.0f );
 			}
 		}
@@ -296,7 +348,7 @@ int main( int argc, char** argv )
 
 	// Premultiplication sanity check: colour never exceeds alpha
 	int premulViolations = 0;
-	for( size_t i = 0; i < pixels.size(); i += 4 )
+	for( size_t i = 0; !straight && i < pixels.size(); i += 4 )
 		for( int c = 0; c < 3; ++c )
 			if( pixels[ i + c ] > pixels[ i + 3 ] + 1 )
 				++premulViolations;
@@ -320,10 +372,22 @@ int main( int argc, char** argv )
 		GetParamEventsStruct ge{ 64, events };
 		call( FF_GET_PARAMETER_EVENTS, ptr( &ge ), inst );
 		std::printf( "  pending host events: %u\n", ge.numEvents );
+		for( const std::string& name : printParams )
+		{
+			auto it = byName.find( name );
+			if( it == byName.end() )
+				continue;
+			FFMixed v = call( FF_GET_PARAMETER, u( it->second ), inst );
+			char disp[ 128 ];
+			const char* d = (const char*)call( FF_GET_PARAMETER_DISPLAY, u( it->second ), inst ).PointerValue;
+			std::snprintf( disp, sizeof( disp ), "%s", d ? d : "" );
+			std::printf( "  %-14s = %g  (%s)\n", name.c_str(), *(float*)&v.UIntValue, disp );
+		}
 	}
 
 	call( FF_DEINSTANTIATE_GL, u( 0 ), inst );
 	call( FF_DEINITIALISE, u( 0 ) );
-	std::printf( "%s  last frame %.1f ms  state-leaks %d  premul-violations %d\n", outPath, frameMs, stateErrors, premulViolations );
+	std::printf( "%s  instantiate %.1f ms, first frame %.1f ms, last frame %.1f ms  state-leaks %d  premul-violations %d\n", outPath, instantiateMs,
+				 firstFrameMs, frameMs, stateErrors, premulViolations );
 	return stateErrors || premulViolations ? 3 : 0;
 }

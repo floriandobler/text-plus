@@ -7,7 +7,7 @@
 #include <cstdlib>
 #include <filesystem>
 
-namespace kontur
+namespace textplus
 {
 
 std::vector< std::string > platformFontFiles()
@@ -37,7 +37,7 @@ std::string platformCacheDirectory()
 {
 	if( const char* local = std::getenv( "LOCALAPPDATA" ) )
 	{
-		std::filesystem::path dir = std::filesystem::path( local ) / "KonturText";
+		std::filesystem::path dir = std::filesystem::path( local ) / "TextPlus";
 		std::error_code ec;
 		std::filesystem::create_directories( dir, ec );
 		return dir.string();
@@ -45,4 +45,4 @@ std::string platformCacheDirectory()
 	return {};
 }
 
-}//namespace kontur
+}//namespace textplus

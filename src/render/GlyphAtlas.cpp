@@ -2,7 +2,7 @@
 
 #include <algorithm>
 
-namespace kontur
+namespace textplus
 {
 namespace
 {
@@ -193,4 +193,4 @@ const AtlasSlot* GlyphAtlas::add( uint64_t key, const GlyphBitmap& bmp )
 	return &( slots[ key ] = s );
 }
 
-}//namespace kontur
+}//namespace textplus

@@ -2,14 +2,17 @@
 
 #include "core/GlyphCache.h"
 
-#include <hb.h>
-
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <fstream>
+#include <sstream>
+#include <sys/stat.h>
 
-namespace kontur
+#include <hb.h>
+
+namespace textplus
 {
 namespace
 {
@@ -21,28 +24,50 @@ FFResult initialiseLibrary()
 	return FF_SUCCESS;
 }
 
-CFFGLPluginInfo PluginInfo( PluginFactory< TextSource >,                            // create method
-							"KTXT",                                                // unique ID (4 chars)
-							"Kontur Text",                                         // name
-							2,                                                     // API major
-							1,                                                     // API minor
-							0,                                                     // plugin major
-							1,                                                     // plugin minor
-							FF_SOURCE,                                             // type
-							"Text source with distance-field outlines, shadows and glow",
-							"Kontur Text 0.1",
+CFFGLPluginInfo PluginInfo( PluginFactory< TextSource >,// create method
+							"KTXT",                      // unique ID, kept from 0.1 so saved compositions still find the plugin
+							"Text+",                     // name (sorts next to Resolume's own Text sources)
+							2,                           // API major
+							1,                           // API minor
+							0,                           // plugin major
+							2,                           // plugin minor
+							FF_SOURCE,
+							"Text source with distance-field outlines, shadows, glow and per-character animation",
+							"Text+ 0.2",
 							0, nullptr, initialiseLibrary, nullptr );
 
-const char* kGroupText      = "Text";
-const char* kGroupFont      = "Font";
-const char* kGroupLayout    = "Layout";
-const char* kGroupFill      = "Fill";
-const char* kGroupOutline   = "Outline";
-const char* kGroupOutline2  = "Outline 2";
-const char* kGroupShadow    = "Shadow";
-const char* kGroupGlow      = "Glow";
-const char* kGroupAnimation = "Animation";
-const char* kGroupQuality   = "Quality";
+const char* kGroupText     = "Text";
+const char* kGroupFont     = "Font";
+const char* kGroupLayout   = "Layout";
+const char* kGroupFill     = "Fill";
+const char* kGroupOutline  = "Outline";
+const char* kGroupOutline2 = "Outline 2";
+const char* kGroupShadow   = "Shadow";
+const char* kGroupGlow     = "Glow";
+const char* kGroupAnim[ kNumAnimators ] = { "Animator 1", "Animator 2" };
+const char* kGroupQuality  = "Quality";
+
+enum SlidesMode
+{
+	SLIDES_OFF,
+	SLIDES_LINES,
+	SLIDES_BLOCKS
+};
+enum AdvanceMode
+{
+	ADVANCE_MANUAL,
+	ADVANCE_BUTTONS,
+	ADVANCE_BEATS
+};
+enum DriveMode
+{
+	DRIVE_MANUAL,
+	DRIVE_SLIDE,
+	DRIVE_LOOP
+};
+
+const std::vector< const char* > kPresetNames = { "Load preset...", "Typewriter", "Fade In", "Rise In", "Drop In", "Pop In", "Spin In",
+												  "Words Slide In", "Fade Out", "Wave", "Jitter", "Color Sweep", "Reset" };
 
 Color hsbaToColor( float h, float s, float v, float a )
 {
@@ -67,66 +92,218 @@ Color hsbaToColor( float h, float s, float v, float a )
 	return Color{ r, g, b, a };
 }
 
-bool familyMatchesQuery( const std::string& family, const std::string& query )
+int64_t fileStamp( const std::string& path )
 {
-	std::string f = normalizeFontName( family );
-	std::string q = normalizeFontName( query.substr( 0, query.find( '/' ) ) );
-	return !q.empty() && ( f.find( q ) != std::string::npos || q.find( f ) != std::string::npos );
+	struct stat st;
+	if( stat( path.c_str(), &st ) != 0 )
+		return -1;
+#if defined( __APPLE__ )
+	return (int64_t)st.st_mtimespec.tv_sec * 1000 + st.st_mtimespec.tv_nsec / 1000000 + (int64_t)st.st_size * 31;
+#else
+	return (int64_t)st.st_mtime * 1000 + (int64_t)st.st_size * 31;
+#endif
+}
+
+std::string readTextFile( const std::string& path )
+{
+	std::ifstream in( path, std::ios::binary );
+	if( !in )
+		return {};
+	std::stringstream ss;
+	ss << in.rdbuf();
+	std::string s = ss.str();
+	if( s.size() >= 3 && (unsigned char)s[ 0 ] == 0xEF && (unsigned char)s[ 1 ] == 0xBB && (unsigned char)s[ 2 ] == 0xBF )
+		s.erase( 0, 3 );// UTF-8 BOM
+	while( !s.empty() && ( s.back() == '\n' || s.back() == '\r' ) )
+		s.pop_back();
+	return s;
+}
+
+std::string trimCopy( const std::string& s )
+{
+	size_t a = s.find_first_not_of( " \t\r\n" );
+	if( a == std::string::npos )
+		return {};
+	size_t b = s.find_last_not_of( " \t\r\n" );
+	return s.substr( a, b - a + 1 );
+}
+
+// Splits the source text into slides.
+//  Each Line: every line (newline or "|" when "| = New Line" is on) is a slide.
+//  Blocks:    "||" or an empty line separates slides; single breaks stay line breaks.
+std::vector< std::string > splitSlides( const std::string& src, int mode, bool pipeIsNewline )
+{
+	std::vector< std::string > out;
+	if( mode == SLIDES_LINES )
+	{
+		std::string cur;
+		for( size_t i = 0; i < src.size(); ++i )
+		{
+			char c       = src[ i ];
+			bool isBreak = c == '\n' || c == '\r' || ( c == '|' && pipeIsNewline ) || ( c == '\\' && i + 1 < src.size() && src[ i + 1 ] == 'n' );
+			if( isBreak )
+			{
+				if( c == '\\' || ( c == '\r' && i + 1 < src.size() && src[ i + 1 ] == '\n' ) )
+					++i;
+				if( !trimCopy( cur ).empty() )
+					out.push_back( cur );
+				cur.clear();
+			}
+			else
+				cur.push_back( c );
+		}
+		if( !trimCopy( cur ).empty() )
+			out.push_back( cur );
+	}
+	else
+	{
+		// Normalise line breaks, then cut at "||" and at blank lines.
+		std::string norm;
+		for( size_t i = 0; i < src.size(); ++i )
+		{
+			if( src[ i ] == '\r' )
+			{
+				if( i + 1 < src.size() && src[ i + 1 ] == '\n' )
+					++i;
+				norm.push_back( '\n' );
+			}
+			else
+				norm.push_back( src[ i ] );
+		}
+		std::string cur;
+		size_t i = 0;
+		while( i < norm.size() )
+		{
+			if( norm.compare( i, 2, "||" ) == 0 )
+			{
+				out.push_back( cur );
+				cur.clear();
+				i += 2;
+				continue;
+			}
+			if( norm[ i ] == '\n' )
+			{
+				size_t j = i + 1;
+				while( j < norm.size() && ( norm[ j ] == ' ' || norm[ j ] == '\t' ) )
+					++j;
+				if( j < norm.size() && norm[ j ] == '\n' )// blank line
+				{
+					out.push_back( cur );
+					cur.clear();
+					while( j < norm.size() && ( norm[ j ] == '\n' || norm[ j ] == ' ' || norm[ j ] == '\t' ) )
+						++j;
+					i = j;
+					continue;
+				}
+			}
+			cur.push_back( norm[ i ] );
+			++i;
+		}
+		out.push_back( cur );
+		out.erase( std::remove_if( out.begin(), out.end(), []( const std::string& s ) { return trimCopy( s ).empty(); } ), out.end() );
+	}
+	if( out.empty() )
+		out.push_back( std::string() );
+	return out;
+}
+
+int positiveMod( int a, int n )
+{
+	return n <= 0 ? 0 : ( ( a % n ) + n ) % n;
 }
 }//namespace
 
+// ===========================================================================
+// Parameters
+// ===========================================================================
 TextSource::TextSource()
 {
+	createdAt = std::chrono::steady_clock::now();
 	SetMinInputs( 0 );
 	SetMaxInputs( 0 );
 	defineParameters();
-	FontDatabase::instance().ensureScanning();
+	FontDatabase& db = FontDatabase::instance();
+	db.ensureScanning();
+	// If the fonts are known already (every clip after the first), fill the menus
+	// now: they are then part of the initial parameter info instead of a
+	// "list changed" event the host has to process later.
+	if( db.isReady() )
+		populateFontMenus( false );
 }
 
 TextSource::~TextSource() = default;
 
 void TextSource::defineParameters()
 {
-	auto range = [ & ]( ParamId id, const char* name, const char* group, float def, float lo, float hi ) {
+	visibility.assign( P_COUNT, -1 );
+
+	auto named = [ & ]( unsigned id, const std::string& internal, const char* display ) {
+		if( display && internal != display )
+			SetParamDisplayName( id, display, false );
+	};
+	auto range = [ & ]( unsigned id, const std::string& name, const char* group, float def, float lo, float hi, const char* display = nullptr ) {
 		values[ id ] = def;
-		SetParamInfo( id, name, FF_TYPE_STANDARD, def );
-		// SetParamInfo clamps defaults of standard params to 0..1; store the real default.
-		if( ParamInfo* info = FindParamInfo( id ) )
+		SetParamInfo( id, name.c_str(), FF_TYPE_STANDARD, def );
+		if( ParamInfo* info = FindParamInfo( id ) )// SetParamInfo clamps defaults of standard params to 0..1
 			info->defaultFloatVal = def;
 		SetParamRange( id, lo, hi );
 		SetParamGroup( id, group );
+		named( id, name, display );
 	};
-	auto boolean = [ & ]( ParamId id, const char* name, const char* group, bool def ) {
-		values[ id ] = def ? 1.0f : 0.0f;
-		SetParamInfo( id, name, FF_TYPE_BOOLEAN, def );
+	auto integer = [ & ]( unsigned id, const std::string& name, const char* group, int def, int lo, int hi ) {
+		values[ id ] = (float)def;
+		SetParamInfo( id, name.c_str(), FF_TYPE_INTEGER, (float)def );
+		if( ParamInfo* info = FindParamInfo( id ) )
+			info->defaultFloatVal = (float)def;
+		SetParamRange( id, (float)lo, (float)hi );
 		SetParamGroup( id, group );
 	};
-	auto option = [ & ]( ParamId id, const char* name, const char* group, std::vector< const char* > items, int def ) {
+	auto boolean = [ & ]( unsigned id, const std::string& name, const char* group, bool def, const char* display = nullptr ) {
+		values[ id ] = def ? 1.0f : 0.0f;
+		SetParamInfo( id, name.c_str(), FF_TYPE_BOOLEAN, def );
+		SetParamGroup( id, group );
+		named( id, name, display );
+	};
+	auto event = [ & ]( unsigned id, const std::string& name, const char* group ) {
+		values[ id ] = 0.0f;
+		SetParamInfo( id, name.c_str(), FF_TYPE_EVENT, false );
+		SetParamGroup( id, group );
+	};
+	auto option = [ & ]( unsigned id, const std::string& name, const char* group, const std::vector< const char* >& items, int def, const char* display = nullptr ) {
 		values[ id ] = (float)def;
-		SetOptionParamInfo( id, name, (unsigned)items.size(), (float)def );
+		SetOptionParamInfo( id, name.c_str(), (unsigned)items.size(), (float)def );
 		for( unsigned i = 0; i < items.size(); ++i )
 			SetParamElementInfo( id, i, items[ i ], (float)i );
 		SetParamGroup( id, group );
+		named( id, name, display );
 	};
-	auto color = [ & ]( ParamId h, const char* name, const char* group, float hv, float sv, float bv, float av ) {
-		std::string n = name;
-		values[ h ] = hv;
-		values[ h + 1 ] = sv;
-		values[ h + 2 ] = bv;
-		values[ h + 3 ] = av;
-		SetParamInfo( h, n.c_str(), FF_TYPE_HUE, hv );
-		SetParamInfo( h + 1, ( n + "_Sat" ).c_str(), FF_TYPE_SATURATION, sv );
-		SetParamInfo( h + 2, ( n + "_Bri" ).c_str(), FF_TYPE_BRIGHTNESS, bv );
-		SetParamInfo( h + 3, ( n + "_Alpha" ).c_str(), FF_TYPE_ALPHA, av );
+	auto color = [ & ]( unsigned h, const std::string& name, const char* group, float hv, float sv, float bv, float av, const char* display = nullptr ) {
+		const float v[ 4 ]      = { hv, sv, bv, av };
+		const unsigned types[ 4 ] = { FF_TYPE_HUE, FF_TYPE_SATURATION, FF_TYPE_BRIGHTNESS, FF_TYPE_ALPHA };
+		const char* suffix[ 4 ]   = { "", "_Sat", "_Bri", "_Alpha" };
 		for( unsigned i = 0; i < 4; ++i )
+		{
+			values[ h + i ] = v[ i ];
+			SetParamInfo( h + i, ( name + suffix[ i ] ).c_str(), types[ i ], v[ i ] );
 			SetParamGroup( h + i, group );
+		}
+		named( h, name, display );// the hue parameter names the whole colour
 	};
 
 	// Text
-	text = "Kontur";
+	text = "Text+";
 	SetParamInfo( P_TEXT, "Text", FF_TYPE_TEXT, text.c_str() );
 	SetParamGroup( P_TEXT, kGroupText );
 	boolean( P_PIPE_NEWLINE, "| = New Line", kGroupText, true );
+	boolean( P_MARKUP, "Color Tags", kGroupText, true );
+	SetFileParamInfo( P_TEXT_FILE, "Text File", { "txt", "text", "md" }, "" );
+	SetParamGroup( P_TEXT_FILE, kGroupText );
+	option( P_SLIDES, "Slides", kGroupText, { "Off", "Each Line", "Blocks (|| or empty line)" }, SLIDES_OFF );
+	integer( P_SLIDE, "Slide", kGroupText, 1, 1, 999 );
+	option( P_ADVANCE, "Advance", kGroupText, { "Slide Parameter", "Next / Previous Buttons", "Every N Beats" }, ADVANCE_MANUAL );
+	range( P_BEATS_PER_SLIDE, "Beats per Slide", kGroupText, 4.0f, 0.25f, 64.0f );
+	event( P_NEXT_SLIDE, "Next Slide", kGroupText );
+	event( P_PREV_SLIDE, "Previous Slide", kGroupText );
 
 	// Font
 	SetParamInfo( P_FONT, "Font", FF_TYPE_TEXT, "" );
@@ -142,7 +319,7 @@ void TextSource::defineParameters()
 	range( P_POS_Y, "Position Y", kGroupLayout, 0.0f, -4000.0f, 4000.0f );
 	range( P_ROTATION, "Rotation", kGroupLayout, 0.0f, -360.0f, 360.0f );
 	option( P_ALIGN, "Align", kGroupLayout, { "Left", "Center", "Right", "Justify" }, 1 );
-	option( P_ANCHOR_H, "Anchor H", kGroupLayout, { "Auto (follows Align)", "Left", "Center", "Right" }, 0 );
+	option( P_ANCHOR_H, "Anchor H", kGroupLayout, { "Auto", "Left", "Center", "Right" }, 0 );
 	option( P_ANCHOR_V, "Anchor V", kGroupLayout, { "Top", "Middle", "Bottom", "First Baseline", "Last Baseline" }, 1 );
 	range( P_BOX_WIDTH, "Box Width", kGroupLayout, 0.0f, 0.0f, 8000.0f );
 	range( P_BOX_HEIGHT, "Box Height", kGroupLayout, 0.0f, 0.0f, 8000.0f );
@@ -153,7 +330,10 @@ void TextSource::defineParameters()
 	boolean( P_LIGATURES, "Ligatures", kGroupLayout, true );
 
 	// Fill
+	option( P_FILL_MODE, "Fill Mode", kGroupFill, { "Solid", "Gradient (Block)", "Gradient (Characters)" }, 0 );
 	color( P_FILL_H, "Fill Color", kGroupFill, 0.0f, 0.0f, 1.0f, 1.0f );
+	color( P_FILL2_H, "Fill Color 2", kGroupFill, 0.58f, 0.7f, 1.0f, 1.0f );
+	range( P_GRAD_ANGLE, "Gradient Angle", kGroupFill, 0.0f, -180.0f, 180.0f );
 
 	// Outline 1
 	range( P_OL1_WIDTH, "Outline Width", kGroupOutline, 0.0f, 0.0f, 400.0f );
@@ -177,68 +357,127 @@ void TextSource::defineParameters()
 	range( P_GL_RADIUS, "Glow Radius", kGroupGlow, 0.0f, 0.0f, 400.0f );
 	range( P_GL_STRENGTH, "Glow Strength", kGroupGlow, 1.0f, 0.0f, 2.0f );
 
-	// Animation
-	option( P_AN_MODE, "Animation", kGroupAnimation, { "Off", "Typewriter", "Fade", "Rise", "Wave" }, 0 );
-	option( P_AN_UNIT, "Unit", kGroupAnimation, { "Character", "Word", "Line" }, 0 );
-	range( P_AN_PROGRESS, "Progress", kGroupAnimation, 1.0f, 0.0f, 1.0f );
-	range( P_AN_SPREAD, "Spread", kGroupAnimation, 3.0f, 0.0f, 50.0f );
-	range( P_AN_AMOUNT, "Amount", kGroupAnimation, 40.0f, -1000.0f, 1000.0f );
-	range( P_AN_SPEED, "Speed (cycles/beat)", kGroupAnimation, 1.0f, -8.0f, 8.0f );
+	// Animators. Internal names are unique ("A1 Mode"), the UI shows short display names.
+	for( int a = 0; a < kNumAnimators; ++a )
+	{
+		const std::string pre = "A" + std::to_string( a + 1 ) + " ";
+		const char* g         = kGroupAnim[ a ];
+		auto id               = [ & ]( AnimParam p ) { return animParam( a, p ); };
+		option( id( AP_PRESET ), pre + "Preset", g, kPresetNames, 0, "Preset" );
+		option( id( AP_MODE ), pre + "Mode", g, { "Off", "Sequence In", "Sequence Out", "Wave", "Random", "Constant" }, 0, "Mode" );
+		option( id( AP_UNIT ), pre + "Unit", g, { "Character", "Word", "Line" }, 0, "Unit" );
+		option( id( AP_ORDER ), pre + "Order", g, { "Forward", "Reverse", "From Center", "From Edges", "Random" }, 0, "Order" );
+		option( id( AP_DRIVE ), pre + "Drive", g, { "Progress Slider", "Restart on Slide Change", "Loop" }, DRIVE_MANUAL, "Drive" );
+		range( id( AP_PROGRESS ), pre + "Progress", g, 1.0f, 0.0f, 1.0f, "Progress" );
+		range( id( AP_DURATION ), pre + "Duration", g, 2.0f, 0.25f, 64.0f, "Duration (beats)" );
+		range( id( AP_SPREAD ), pre + "Spread", g, 3.0f, 0.0f, 50.0f, "Spread" );
+		option( id( AP_EASE ), pre + "Ease", g, { "Linear", "Smooth", "Ease Out", "Overshoot" }, 1, "Ease" );
+		range( id( AP_SPEED ), pre + "Speed", g, 1.0f, -8.0f, 8.0f, "Speed (per beat)" );
+		range( id( AP_OFFSET_X ), pre + "Offset X", g, 0.0f, -2000.0f, 2000.0f, "Offset X" );
+		range( id( AP_OFFSET_Y ), pre + "Offset Y", g, 0.0f, -2000.0f, 2000.0f, "Offset Y" );
+		range( id( AP_SCALE ), pre + "Scale", g, 100.0f, 0.0f, 400.0f, "Scale" );
+		range( id( AP_ROTATION ), pre + "Rotation", g, 0.0f, -720.0f, 720.0f, "Rotation" );
+		range( id( AP_OPACITY ), pre + "Opacity", g, 100.0f, 0.0f, 100.0f, "Opacity" );
+		color( id( AP_COLOR_H ), pre + "Color", g, 0.0f, 0.8f, 1.0f, 0.0f, "Color (Alpha = Amount)" );
+	}
 
 	// Quality
 	range( P_EDGE, "Edge Softness", kGroupQuality, 1.0f, 0.25f, 4.0f );
+	option( P_ALPHA_OUT, "Alpha Output", kGroupQuality, { "Straight (Resolume)", "Premultiplied" }, 0 );
 
 	updateVisibility( false );
 }
 
-void TextSource::updateVisibility( bool raiseEvent )
+void TextSource::setValue( unsigned id, float v )
 {
-	const bool box      = values[ P_BOX_WIDTH ] > 0.0f;
-	const bool animated = (int)values[ P_AN_MODE ] != 0;
-	if( visibilityInitialised && box == lastVisibilityBox && animated == lastVisibilityOutline2 )
+	if( id >= P_COUNT || values[ id ] == v )
 		return;
-	SetParamVisibility( P_BOX_HEIGHT, box, raiseEvent );
-	SetParamVisibility( P_FIT, box, raiseEvent );
-	for( ParamId id : { P_AN_UNIT, P_AN_PROGRESS, P_AN_SPREAD, P_AN_AMOUNT, P_AN_SPEED } )
-		SetParamVisibility( id, animated, raiseEvent );
-	lastVisibilityBox      = box;
-	lastVisibilityOutline2 = animated;
-	visibilityInitialised  = true;
+	values[ id ] = v;
+	RaiseParamEvent( id, FF_EVENT_FLAG_VALUE );
 }
 
-// ---------------------------------------------------------------------------
-// Parameters
-// ---------------------------------------------------------------------------
+void TextSource::updateVisibility( bool raiseEvent )
+{
+	auto show = [ & ]( unsigned id, bool v ) {
+		signed char want = v ? 1 : 0;
+		if( visibility[ id ] == want )
+			return;
+		visibility[ id ] = want;
+		SetParamVisibility( id, v, raiseEvent );
+	};
+	const bool box = values[ P_BOX_WIDTH ] > 0.0f;
+	show( P_BOX_HEIGHT, box );
+	show( P_FIT, box );
+
+	const int slidesMode = (int)values[ P_SLIDES ];
+	const int advance    = (int)values[ P_ADVANCE ];
+	show( P_SLIDE, slidesMode != SLIDES_OFF );
+	show( P_ADVANCE, slidesMode != SLIDES_OFF );
+	show( P_BEATS_PER_SLIDE, slidesMode != SLIDES_OFF && advance == ADVANCE_BEATS );
+	show( P_NEXT_SLIDE, slidesMode != SLIDES_OFF && advance == ADVANCE_BUTTONS );
+	show( P_PREV_SLIDE, slidesMode != SLIDES_OFF && advance == ADVANCE_BUTTONS );
+
+	const int fillMode = (int)values[ P_FILL_MODE ];
+	show( P_FILL2_H, fillMode != 0 );
+	show( P_GRAD_ANGLE, fillMode == 1 );
+
+	for( int a = 0; a < kNumAnimators; ++a )
+	{
+		const auto mode  = (AnimMode)(int)values[ animParam( a, AP_MODE ) ];
+		const bool on    = mode != AnimMode::Off;
+		const bool seq   = mode == AnimMode::SequenceIn || mode == AnimMode::SequenceOut;
+		const bool waveR = mode == AnimMode::Wave || mode == AnimMode::Random;
+		const int drive  = (int)values[ animParam( a, AP_DRIVE ) ];
+		show( animParam( a, AP_UNIT ), on );
+		show( animParam( a, AP_ORDER ), seq || mode == AnimMode::Wave );
+		show( animParam( a, AP_DRIVE ), on && !waveR );
+		show( animParam( a, AP_PROGRESS ), on );
+		show( animParam( a, AP_DURATION ), on && !waveR && drive != DRIVE_MANUAL );
+		show( animParam( a, AP_SPREAD ), seq || mode == AnimMode::Wave );
+		show( animParam( a, AP_EASE ), seq );
+		show( animParam( a, AP_SPEED ), waveR );
+		for( AnimParam p : { AP_OFFSET_X, AP_OFFSET_Y, AP_SCALE, AP_ROTATION, AP_OPACITY, AP_COLOR_H } )
+			show( animParam( a, p ), on );
+	}
+}
+
 FFResult TextSource::SetFloatParameter( unsigned int index, float value )
 {
 	if( index >= P_COUNT )
 		return FF_FAIL;
-	switch( index )
+
+	if( index == P_FAMILY || index == P_STYLE )
 	{
-	case P_FAMILY:
-		if( menusPopulated && (int)value != (int)values[ P_FAMILY ] )
-		{
-			values[ index ] = value;
-			onFamilyPicked( (int)value );
-		}
-		else if( menusPopulated )
-			values[ index ] = value;
+		// Before the menus are filled the stored index means nothing (the font list
+		// may have changed since the composition was saved); "Font" decides.
+		if( !menusPopulated )
+			return FF_SUCCESS;
+		const bool changed = (int)value != (int)values[ index ];
+		values[ index ]    = value;
+		if( changed && live )
+			index == P_FAMILY ? onFamilyPicked( (int)value ) : onStylePicked( (int)value );
 		return FF_SUCCESS;
-	case P_STYLE:
-		if( menusPopulated && (int)value != (int)values[ P_STYLE ] )
-		{
-			values[ index ] = value;
-			onStylePicked( (int)value );
-		}
-		else if( menusPopulated )
-			values[ index ] = value;
-		return FF_SUCCESS;
-	default:
-		values[ index ] = value;
-		break;
 	}
-	if( index == P_BOX_WIDTH || index == P_AN_MODE )
-		updateVisibility( true );
+	for( int a = 0; a < kNumAnimators; ++a )
+		if( index == animParam( a, AP_PRESET ) )
+		{
+			values[ index ] = value;
+			if( live && (int)value > 0 )
+				applyPreset( a, (int)value );
+			return FF_SUCCESS;
+		}
+	if( index == P_NEXT_SLIDE || index == P_PREV_SLIDE )
+	{
+		if( value > 0.5f && values[ index ] <= 0.5f )
+			stepSlide( index == P_NEXT_SLIDE ? 1 : -1 );
+		values[ index ] = value;
+		return FF_SUCCESS;
+	}
+	if( index == P_SLIDE && (int)value != (int)values[ P_SLIDE ] )
+		buttonOffset = 0;// the Slide parameter sets the position, buttons step from there
+
+	values[ index ] = value;
+	updateVisibility( true );
 	return FF_SUCCESS;
 }
 
@@ -264,6 +503,15 @@ FFResult TextSource::SetTextParameter( unsigned int index, const char* value )
 			fontDirty = true;
 		}
 		return FF_SUCCESS;
+	case P_TEXT_FILE:
+		if( v != textFile )
+		{
+			textFile            = v;
+			textFileStamp       = -1;
+			textFilePollCounter = 0;
+			textFileContent.clear();
+		}
+		return FF_SUCCESS;
 	default:
 		return FF_FAIL;
 	}
@@ -287,6 +535,9 @@ char* TextSource::GetTextParameter( unsigned int index )
 	case P_FONT_FILE:
 		textReturnBuffer = fontFile;
 		break;
+	case P_TEXT_FILE:
+		textReturnBuffer = textFile;
+		break;
 	default:
 		textReturnBuffer.clear();
 		break;
@@ -298,11 +549,18 @@ char* TextSource::GetParameterDisplay( unsigned int index )
 {
 	char buf[ 64 ];
 	const float v = index < P_COUNT ? values[ index ] : 0.0f;
+	auto isAnim   = [ & ]( AnimParam p ) {
+		for( int a = 0; a < kNumAnimators; ++a )
+			if( index == animParam( a, p ) )
+				return true;
+		return false;
+	};
 	switch( index )
 	{
 	case P_TEXT:
 	case P_FONT:
 	case P_FONT_FILE:
+	case P_TEXT_FILE:
 		return GetTextParameter( index );
 	case P_SIZE:
 	case P_POS_X:
@@ -315,7 +573,6 @@ char* TextSource::GetParameterDisplay( unsigned int index )
 	case P_SH_SOFTNESS:
 	case P_SH_SPREAD:
 	case P_GL_RADIUS:
-	case P_AN_AMOUNT:
 		std::snprintf( buf, sizeof( buf ), "%.0f px", v );
 		break;
 	case P_EDGE:
@@ -323,6 +580,7 @@ char* TextSource::GetParameterDisplay( unsigned int index )
 		break;
 	case P_ROTATION:
 	case P_SH_ANGLE:
+	case P_GRAD_ANGLE:
 		std::snprintf( buf, sizeof( buf ), "%.0f\xC2\xB0", v );
 		break;
 	case P_TRACKING:
@@ -331,14 +589,43 @@ char* TextSource::GetParameterDisplay( unsigned int index )
 	case P_LEADING:
 		std::snprintf( buf, sizeof( buf ), "%.0f %%", v );
 		break;
-	case P_AN_PROGRESS:
-		std::snprintf( buf, sizeof( buf ), "%.0f %%", v * 100.0f );
+	case P_BEATS_PER_SLIDE:
+		std::snprintf( buf, sizeof( buf ), "%.2g beats", v );
+		break;
+	case P_SLIDE:
+		std::snprintf( buf, sizeof( buf ), "%d / %d", (int)v, slideCount );
 		break;
 	default:
-		return CFFGLPlugin::GetParameterDisplay( index );
+		if( isAnim( AP_PROGRESS ) )
+			std::snprintf( buf, sizeof( buf ), "%.0f %%", v * 100.0f );
+		else if( isAnim( AP_OFFSET_X ) || isAnim( AP_OFFSET_Y ) )
+			std::snprintf( buf, sizeof( buf ), "%.0f px", v );
+		else if( isAnim( AP_SCALE ) || isAnim( AP_OPACITY ) )
+			std::snprintf( buf, sizeof( buf ), "%.0f %%", v );
+		else if( isAnim( AP_ROTATION ) )
+			std::snprintf( buf, sizeof( buf ), "%.0f\xC2\xB0", v );
+		else if( isAnim( AP_DURATION ) )
+			std::snprintf( buf, sizeof( buf ), "%.2g beats", v );
+		else if( isAnim( AP_SPREAD ) )
+			std::snprintf( buf, sizeof( buf ), "%.1f units", v );
+		else
+			return CFFGLPlugin::GetParameterDisplay( index );
 	}
 	displayBuffer = buf;
 	return const_cast< char* >( displayBuffer.c_str() );
+}
+
+FFResult TextSource::SetTime( double time )
+{
+	// A jump back in host time means the clip was re-triggered or scrubbed back:
+	// replay the slide-driven animations from the start.
+	if( lastHostTime >= 0.0 && time + 0.05 < lastHostTime )
+	{
+		slideStartBeat = currentBeats();
+		buttonOffset   = 0;
+	}
+	lastHostTime = time;
+	return CFFGLPlugin::SetTime( time );
 }
 
 void TextSource::SetBeatInfo( float bpm, float barPhase )
@@ -350,12 +637,17 @@ void TextSource::SetBeatInfo( float bpm, float barPhase )
 		barCount += 1.0;// bar wrapped
 	lastBarPhase = barPhase;
 	haveBeatInfo = true;
-	beats        = 4.0 * ( barCount + barPhase );
+	beatsNow     = 4.0 * ( barCount + barPhase );
 }
 
-// ---------------------------------------------------------------------------
+double TextSource::currentBeats() const
+{
+	return haveBeatInfo ? beatsNow : hostTime * 2.0;// 120 BPM when the host sends no beat info
+}
+
+// ===========================================================================
 // Fonts
-// ---------------------------------------------------------------------------
+// ===========================================================================
 void TextSource::setFontText( const std::string& t, bool raiseEvent )
 {
 	if( t == fontText )
@@ -366,7 +658,7 @@ void TextSource::setFontText( const std::string& t, bool raiseEvent )
 		RaiseParamEvent( P_FONT, FF_EVENT_FLAG_VALUE );
 }
 
-void TextSource::populateFontMenus()
+void TextSource::populateFontMenus( bool raiseEvent )
 {
 	familyMenu = FontDatabase::instance().families();
 	if( familyMenu.empty() )
@@ -374,9 +666,9 @@ void TextSource::populateFontMenus()
 	std::vector< float > vals( familyMenu.size() );
 	for( size_t i = 0; i < vals.size(); ++i )
 		vals[ i ] = (float)i;
-	SetParamElements( P_FAMILY, familyMenu, vals, true );
+	SetParamElements( P_FAMILY, familyMenu, vals, raiseEvent );
 	menusPopulated = true;
-	styleMenuFamily.clear();
+	styleMenuKey.clear();
 }
 
 void TextSource::syncMenusToFont()
@@ -387,25 +679,18 @@ void TextSource::syncMenusToFont()
 
 	auto famIt = std::find( familyMenu.begin(), familyMenu.end(), e.family );
 	if( famIt != familyMenu.end() )
-	{
-		float idx = (float)( famIt - familyMenu.begin() );
-		if( values[ P_FAMILY ] != idx )
-		{
-			values[ P_FAMILY ] = idx;
-			RaiseParamEvent( P_FAMILY, FF_EVENT_FLAG_VALUE );
-		}
-	}
+		setValue( P_FAMILY, (float)( famIt - familyMenu.begin() ) );
 
-	const std::string menuKey = ( fontFile.empty() ? "db:" : "file:" + fontFile + ":" ) + e.family;
-	if( menuKey != styleMenuFamily )
+	const bool fromFile       = !fontFile.empty();
+	const std::string menuKey = ( fromFile ? "file:" + fontFile + ":" : "db:" ) + e.family;
+	if( menuKey != styleMenuKey )
 	{
-		styleMenu        = fontFile.empty() ? FontDatabase::instance().stylesOf( e.family ) : FontDatabase::scanFile( fontFile );
-		fileStylesActive = !fontFile.empty();
+		styleMenu = fromFile ? FontDatabase::scanFile( fontFile ) : FontDatabase::instance().stylesOf( e.family );
 		std::vector< std::string > names;
 		std::vector< float > vals;
 		for( size_t i = 0; i < styleMenu.size(); ++i )
 		{
-			names.push_back( fileStylesActive && styleMenu[ i ].family != e.family ? styleMenu[ i ].displayName() : styleMenu[ i ].style );
+			names.push_back( fromFile && styleMenu[ i ].family != e.family ? styleMenu[ i ].displayName() : styleMenu[ i ].style );
 			vals.push_back( (float)i );
 		}
 		if( names.empty() )
@@ -414,26 +699,20 @@ void TextSource::syncMenusToFont()
 			vals.push_back( 0.0f );
 		}
 		SetParamElements( P_STYLE, names, vals, true );
-		styleMenuFamily = menuKey;
+		styleMenuKey = menuKey;
 	}
 	for( size_t i = 0; i < styleMenu.size(); ++i )
 		if( styleMenu[ i ].sameFace( e ) )
 		{
-			if( values[ P_STYLE ] != (float)i )
-			{
-				values[ P_STYLE ] = (float)i;
-				RaiseParamEvent( P_STYLE, FF_EVENT_FLAG_VALUE );
-			}
+			setValue( P_STYLE, (float)i );
 			break;
 		}
 }
 
 void TextSource::onFamilyPicked( int index )
 {
-	if( index < 0 || index >= (int)familyMenu.size() )
-		return;
-	if( !fontFile.empty() )
-		return;// the file decides; the family menu is informational then
+	if( index < 0 || index >= (int)familyMenu.size() || !fontFile.empty() )
+		return;// with a Font File the file decides; the family menu is informational
 	setFontText( familyMenu[ index ], true );// resolve() picks the regular style
 }
 
@@ -454,7 +733,7 @@ void TextSource::resolveFont()
 		std::vector< FontEntry > faces = FontDatabase::scanFile( fontFile );
 		if( !faces.empty() )
 		{
-			entry = faces.front();
+			entry                  = faces.front();
 			std::string styleQuery = fontText.find( '/' ) != std::string::npos ? fontText.substr( fontText.find( '/' ) + 1 ) : std::string();
 			std::string sn         = normalizeFontName( styleQuery );
 			bool found             = false;
@@ -472,17 +751,18 @@ void TextSource::resolveFont()
 						entry = f;
 						break;
 					}
+			if( fontText.empty() || fontText.find( '/' ) == std::string::npos )
+				setFontText( entry->displayName(), true );
 		}
 		else
-		{
-			FFGLLog::LogToHost( ( "Kontur Text: cannot read font file " + fontFile ).c_str() );
-		}
+			FFGLLog::LogToHost( ( "Text+: cannot read font file " + fontFile ).c_str() );
 	}
 	if( !entry )
 	{
 		if( !db.isReady() )
 			return;// try again next frame
-		entry = db.resolve( fontText );
+		bool matched = false;
+		entry        = db.resolve( fontText, &matched );
 		if( !entry )
 		{
 			fontDirty = false;
@@ -491,30 +771,178 @@ void TextSource::resolveFont()
 		}
 		// Write the canonical "Family / Style" back, but only when the query really
 		// matched. A font missing on this machine must not overwrite the saved name.
-		if( fontText.empty() || familyMatchesQuery( entry->family, fontText ) )
+		if( fontText.empty() || matched )
 			setFontText( entry->displayName(), true );
 		else
-			FFGLLog::LogToHost( ( "Kontur Text: font '" + fontText + "' not found, using " + entry->displayName() ).c_str() );
-	}
-	else if( fontText.empty() || fontText.find( '/' ) == std::string::npos )
-	{
-		setFontText( entry->displayName(), true );
+			FFGLLog::LogToHost( ( "Text+: font '" + fontText + "' not found, using " + entry->displayName() ).c_str() );
 	}
 
-	auto newFace = FontFace::get( *entry );
-	if( newFace )
+	if( auto newFace = FontFace::get( *entry ) )
 		face = newFace;
 	fontDirty = false;
 	syncMenusToFont();
 }
 
-// ---------------------------------------------------------------------------
+// ===========================================================================
+// Text, slides
+// ===========================================================================
+void TextSource::pollTextFile()
+{
+	if( textFile.empty() )
+		return;
+	if( textFilePollCounter-- > 0 )
+		return;
+	textFilePollCounter = 20;// about three times a second at 60 fps
+	const int64_t stamp = fileStamp( textFile );
+	if( stamp == textFileStamp )
+		return;
+	textFileStamp   = stamp;
+	textFileContent = stamp >= 0 ? readTextFile( textFile ) : std::string();
+	if( stamp < 0 )
+		FFGLLog::LogToHost( ( "Text+: cannot read text file " + textFile ).c_str() );
+}
+
+void TextSource::stepSlide( int delta )
+{
+	buttonOffset += delta;
+}
+
+std::string TextSource::currentText()
+{
+	pollTextFile();
+	const std::string& source = !textFile.empty() && textFileStamp >= 0 ? textFileContent : text;
+	const int mode            = (int)values[ P_SLIDES ];
+	if( mode == SLIDES_OFF )
+	{
+		slideCount = 1;
+		slideIndex = 0;
+		return source;
+	}
+	const std::string key = std::to_string( mode ) + ( values[ P_PIPE_NEWLINE ] > 0.5f ? "|" : "-" ) + source;
+	if( key != lastSlidesSource )
+	{
+		slides           = splitSlides( source, mode, values[ P_PIPE_NEWLINE ] > 0.5f );
+		lastSlidesSource = key;
+	}
+	slideCount     = (int)slides.size();
+	const int base = (int)values[ P_SLIDE ] - 1;
+	switch( (int)values[ P_ADVANCE ] )
+	{
+	case ADVANCE_MANUAL:
+		slideIndex = positiveMod( base, slideCount );
+		break;
+	case ADVANCE_BUTTONS:
+		slideIndex = positiveMod( base + buttonOffset, slideCount );
+		break;
+	case ADVANCE_BEATS: {
+		const double per = std::max( 0.25f, values[ P_BEATS_PER_SLIDE ] );
+		slideIndex       = positiveMod( base + (int)std::floor( currentBeats() / per ), slideCount );
+		break;
+	}
+	}
+	return slides[ slideIndex ];
+}
+
+// ===========================================================================
+// Animation
+// ===========================================================================
+void TextSource::applyPreset( int a, int preset )
+{
+	struct P
+	{
+		AnimMode mode;
+		AnimUnit unit;
+		AnimEase ease;
+		float spread, speed, offX, offY, scale, rot, opacity, colorAlpha;
+	};
+	// Each preset describes the "away" state; Progress 0 -> 1 plays it in (or out).
+	// Offsets use the UI convention: Offset Y > 0 is up, like Position Y.
+	static const P presets[] = {
+		/* 0 unused       */ { AnimMode::Off, AnimUnit::Character, AnimEase::Smooth, 3, 1, 0, 0, 100, 0, 100, 0 },
+		/* Typewriter     */ { AnimMode::SequenceIn, AnimUnit::Character, AnimEase::Linear, 0, 1, 0, 0, 100, 0, 0, 0 },
+		/* Fade In        */ { AnimMode::SequenceIn, AnimUnit::Character, AnimEase::Smooth, 4, 1, 0, 0, 100, 0, 0, 0 },
+		/* Rise In        */ { AnimMode::SequenceIn, AnimUnit::Character, AnimEase::EaseOut, 4, 1, 0, -120, 100, 0, 0, 0 },
+		/* Drop In        */ { AnimMode::SequenceIn, AnimUnit::Character, AnimEase::Overshoot, 3, 1, 0, 160, 100, 0, 0, 0 },
+		/* Pop In         */ { AnimMode::SequenceIn, AnimUnit::Character, AnimEase::Overshoot, 3, 1, 0, 0, 0, 0, 0, 0 },
+		/* Spin In        */ { AnimMode::SequenceIn, AnimUnit::Character, AnimEase::EaseOut, 4, 1, 0, 0, 0, 180, 0, 0 },
+		/* Words Slide In */ { AnimMode::SequenceIn, AnimUnit::Word, AnimEase::EaseOut, 1.5f, 1, -220, 0, 100, 0, 0, 0 },
+		/* Fade Out       */ { AnimMode::SequenceOut, AnimUnit::Character, AnimEase::Smooth, 4, 1, 0, 0, 100, 0, 0, 0 },
+		/* Wave           */ { AnimMode::Wave, AnimUnit::Character, AnimEase::Smooth, 8, 1, 0, 30, 100, 0, 100, 0 },
+		/* Jitter         */ { AnimMode::Random, AnimUnit::Character, AnimEase::Smooth, 3, 4, 6, 6, 100, 8, 100, 0 },
+		/* Color Sweep    */ { AnimMode::Wave, AnimUnit::Character, AnimEase::Smooth, 12, 0.5f, 0, 0, 100, 0, 100, 1 },
+		/* Reset          */ { AnimMode::Off, AnimUnit::Character, AnimEase::Smooth, 3, 1, 0, 0, 100, 0, 100, 0 },
+	};
+	if( preset <= 0 || preset >= (int)( sizeof( presets ) / sizeof( presets[ 0 ] ) ) )
+		return;
+	const P& p  = presets[ preset ];
+	auto id     = [ & ]( AnimParam ap ) { return animParam( a, ap ); };
+	setValue( id( AP_MODE ), (float)p.mode );
+	setValue( id( AP_UNIT ), (float)p.unit );
+	setValue( id( AP_ORDER ), 0.0f );
+	setValue( id( AP_EASE ), (float)p.ease );
+	setValue( id( AP_SPREAD ), p.spread );
+	setValue( id( AP_SPEED ), p.speed );
+	setValue( id( AP_OFFSET_X ), p.offX );
+	setValue( id( AP_OFFSET_Y ), p.offY );
+	setValue( id( AP_SCALE ), p.scale );
+	setValue( id( AP_ROTATION ), p.rot );
+	setValue( id( AP_OPACITY ), p.opacity );
+	setValue( id( AP_COLOR_A ), p.colorAlpha );
+	if( p.mode == AnimMode::Wave || p.mode == AnimMode::Random || p.mode == AnimMode::Off )
+		setValue( id( AP_PROGRESS ), 1.0f );
+	// The menu is a one-shot loader: back to "Load preset..." so loading a
+	// composition never re-applies a preset over tweaked values.
+	setValue( id( AP_PRESET ), 0.0f );
+	updateVisibility( true );
+}
+
+float TextSource::animatorProgress( int a ) const
+{
+	const float manual = values[ animParam( a, AP_PROGRESS ) ];
+	const float dur    = std::max( 0.25f, values[ animParam( a, AP_DURATION ) ] );
+	switch( (int)values[ animParam( a, AP_DRIVE ) ] )
+	{
+	case DRIVE_SLIDE:
+		return (float)std::clamp( ( currentBeats() - slideStartBeat ) / dur, 0.0, 1.0 );
+	case DRIVE_LOOP: {
+		double t = currentBeats() / dur;
+		return (float)( t - std::floor( t ) );
+	}
+	default:
+		return manual;
+	}
+}
+
+AnimatorParams TextSource::animatorParams( int a ) const
+{
+	auto v = [ & ]( AnimParam p ) { return values[ animParam( a, p ) ]; };
+	AnimatorParams ap;
+	ap.mode        = (AnimMode)std::clamp( (int)v( AP_MODE ), 0, 5 );
+	ap.unit        = (AnimUnit)std::clamp( (int)v( AP_UNIT ), 0, 2 );
+	ap.order       = (AnimOrder)std::clamp( (int)v( AP_ORDER ), 0, 4 );
+	ap.ease        = (AnimEase)std::clamp( (int)v( AP_EASE ), 0, 3 );
+	ap.progress    = ( ap.mode == AnimMode::Wave || ap.mode == AnimMode::Random ) ? v( AP_PROGRESS ) : animatorProgress( a );
+	ap.spread      = v( AP_SPREAD );
+	ap.speed       = v( AP_SPEED );
+	ap.offsetX     = v( AP_OFFSET_X );
+	ap.offsetY     = -v( AP_OFFSET_Y );// UI: Y up, like Position Y
+	ap.scale       = v( AP_SCALE ) / 100.0f;
+	ap.rotationDeg = v( AP_ROTATION );
+	ap.opacity     = v( AP_OPACITY ) / 100.0f;
+	Color c        = hsbaToColor( v( AP_COLOR_H ), v( AP_COLOR_S ), v( AP_COLOR_B ), 1.0f );
+	ap.color       = Rgb{ c.r, c.g, c.b };
+	ap.colorAmount = v( AP_COLOR_A );
+	ap.seed        = 0x1234u + (unsigned)a * 7919u;
+	return ap;
+}
+
+// ===========================================================================
 // Frame
-// ---------------------------------------------------------------------------
-LayoutParams TextSource::currentLayoutParams() const
+// ===========================================================================
+LayoutParams TextSource::currentLayoutParams( const std::string& t ) const
 {
 	LayoutParams p;
-	p.text             = text;
+	p.text             = t;
 	p.sizePx           = values[ P_SIZE ];
 	p.trackingPermille = values[ P_TRACKING ];
 	p.leadingPercent   = values[ P_LEADING ];
@@ -526,19 +954,24 @@ LayoutParams TextSource::currentLayoutParams() const
 	p.fit              = values[ P_BOX_WIDTH ] > 0 ? (FitMode)std::clamp( (int)values[ P_FIT ], 0, 2 ) : FitMode::Off;
 	p.kerning          = values[ P_KERNING ] > 0.5f;
 	p.ligatures        = values[ P_LIGATURES ] > 0.5f;
-	p.pipeIsNewline    = values[ P_PIPE_NEWLINE ] > 0.5f;
+	// With slides the pipe already separated the slides; inside a block it still breaks lines.
+	p.pipeIsNewline = values[ P_PIPE_NEWLINE ] > 0.5f;
+	p.markup        = values[ P_MARKUP ] > 0.5f;
 	return p;
 }
 
 Style TextSource::currentStyle() const
 {
-	auto col = [ & ]( ParamId h ) { return hsbaToColor( values[ h ], values[ h + 1 ], values[ h + 2 ], values[ h + 3 ] ); };
+	auto col = [ & ]( unsigned h ) { return hsbaToColor( values[ h ], values[ h + 1 ], values[ h + 2 ], values[ h + 3 ] ); };
 	Style s;
 	s.fill             = col( P_FILL_H );
+	s.fill2            = col( P_FILL2_H );
+	s.fillMode         = (FillMode)std::clamp( (int)values[ P_FILL_MODE ], 0, 2 );
+	s.gradientAngle    = values[ P_GRAD_ANGLE ] * 3.14159265f / 180.0f;
 	s.outline1Width    = values[ P_OL1_WIDTH ];
 	s.outline1Position = (OutlinePosition)std::clamp( (int)values[ P_OL1_POSITION ], 0, 2 );
-	s.outline1         = col( P_OL1_H );
 	s.sharpCorners     = (int)values[ P_OL_CORNERS ] == 1;
+	s.outline1         = col( P_OL1_H );
 	s.outline2Width    = values[ P_OL2_WIDTH ];
 	s.outline2         = col( P_OL2_H );
 	s.shadow           = col( P_SH_H );
@@ -550,34 +983,24 @@ Style TextSource::currentStyle() const
 	s.shadowSpread     = values[ P_SH_SPREAD ];
 	if( dist <= 0.0f && s.shadowSpread <= 0.0f )
 		s.shadow.a = 0.0f;// fully hidden behind the text: skip the work
-	s.glow         = col( P_GL_H );
-	s.glowRadius   = values[ P_GL_RADIUS ];
-	s.glowStrength = values[ P_GL_STRENGTH ];
-	s.edgeSoftness = values[ P_EDGE ];
+	s.glow                = col( P_GL_H );
+	s.glowRadius          = values[ P_GL_RADIUS ];
+	s.glowStrength        = values[ P_GL_STRENGTH ];
+	s.edgeSoftness        = values[ P_EDGE ];
+	s.premultipliedOutput = (int)values[ P_ALPHA_OUT ] == 1;
 	return s;
-}
-
-AnimParams TextSource::currentAnimParams() const
-{
-	AnimParams a;
-	a.mode     = (AnimMode)std::clamp( (int)values[ P_AN_MODE ], 0, 4 );
-	a.unit     = (AnimUnit)std::clamp( (int)values[ P_AN_UNIT ], 0, 2 );
-	a.progress = values[ P_AN_PROGRESS ];
-	a.spread   = values[ P_AN_SPREAD ];
-	a.amount   = values[ P_AN_AMOUNT ];
-	a.speed    = values[ P_AN_SPEED ];
-	a.beats    = haveBeatInfo ? beats : hostTime * 2.0;// 120 BPM when the host sends no beat info
-	return a;
 }
 
 FFResult TextSource::InitGL( const FFGLViewportStruct* vp )
 {
+	auto t0 = std::chrono::steady_clock::now();
 	CFFGLPlugin::InitGL( vp );
 	if( !renderer.init() || !atlas.init() )
 	{
 		DeInitGL();
 		return FF_FAIL;
 	}
+	initGLMs = std::chrono::duration< double, std::milli >( std::chrono::steady_clock::now() - t0 ).count();
 	return FF_SUCCESS;
 }
 
@@ -590,24 +1013,31 @@ FFResult TextSource::DeInitGL()
 
 FFResult TextSource::ProcessOpenGL( ProcessOpenGLStruct* pGL )
 {
+	auto frameStart  = std::chrono::steady_clock::now();
 	FontDatabase& db = FontDatabase::instance();
 	db.ensureScanning();
 	if( !menusPopulated && db.isReady() )
 	{
-		populateFontMenus();
+		populateFontMenus( true );
 		fontDirty = true;
 	}
 	if( fontDirty )
 		resolveFont();
 
 	instances.clear();
-	pendingGlyphs = !face;
 	BlockTransform transform;
 	Style style = currentStyle();
 
 	if( face )
 	{
-		LayoutParams lp = currentLayoutParams();
+		const std::string shownText = currentText();
+		if( slideIndex != lastSlideShown )
+		{
+			slideStartBeat = currentBeats();
+			lastSlideShown = slideIndex;
+		}
+
+		LayoutParams lp = currentLayoutParams( shownText );
 		if( !layoutValid || lp != lastLayoutParams || face->id() != lastLayoutFaceId )
 		{
 			layout           = layoutText( *face, lp );
@@ -616,30 +1046,45 @@ FFResult TextSource::ProcessOpenGL( ProcessOpenGLStruct* pGL )
 			layoutValid      = true;
 		}
 
-		const AnimParams anim = currentAnimParams();
-		animateGlyphs( layout, anim, glyphStates );
+		// Per-glyph state: inline colours, character gradient, then the animators.
+		initGlyphStates( layout, glyphStates );
+		const float lastIdx = (float)std::max( 1, layout.numChars - 1 );
+		if( style.fillMode == FillMode::GradientChars )
+			for( size_t i = 0; i < glyphStates.size(); ++i )
+				if( glyphStates[ i ].tintAmount <= 0.0f )// inline colours win
+				{
+					const float t = layout.glyphs[ i ].charIndex / lastIdx;
+					layerTint( glyphStates[ i ], Rgb{ style.fill.r + ( style.fill2.r - style.fill.r ) * t, style.fill.g + ( style.fill2.g - style.fill.g ) * t,
+													 style.fill.b + ( style.fill2.b - style.fill.b ) * t },
+							   1.0f );
+				}
+		float maxScale = 1.0f;
+		for( int a = 0; a < kNumAnimators; ++a )
+		{
+			const AnimatorParams ap = animatorParams( a );
+			applyAnimator( layout, ap, currentBeats(), glyphStates );
+			maxScale *= maxAnimatedScale( ap );
+		}
 
-		const float size     = layout.sizePx;
-		const float maxScale = std::max( 1.0f, maxAnimatedScale( anim ) );
-		const int level      = spreadLevelFor( style.reach() / std::max( 1.0f, size ) );
-		int minLevelUsed     = level;
-		bool atlasFull       = false;
-		GlyphCache& cache    = GlyphCache::instance();
-		const float lastIdx  = (float)std::max( 1, layout.numChars - 1 );
+		const float size    = layout.sizePx;
+		const int level     = spreadLevelFor( style.reach() / std::max( 1.0f, size ) );
+		int minLevelUsed    = level;
+		bool atlasFull      = false;
+		GlyphCache& cache   = GlyphCache::instance();
+		float minGlyphScale = 1.0f;
 
 		instances.reserve( layout.glyphs.size() );
 		for( size_t i = 0; i < layout.glyphs.size(); ++i )
 		{
-			const LaidGlyph& g    = layout.glyphs[ i ];
-			const GlyphState& st  = glyphStates[ i ];
-			if( st.alpha <= 0.001f )
+			const LaidGlyph& g   = layout.glyphs[ i ];
+			const GlyphState& st = glyphStates[ i ];
+			if( st.alpha <= 0.001f || st.scale <= 0.001f )
 				continue;
 
 			const AtlasSlot* slot = atlas.find( atlasKey( face->id(), g.glyphId, level ) );
 			if( !slot )
 			{
-				auto bmp = cache.get( face, g.glyphId, level );
-				if( bmp )
+				if( auto bmp = cache.get( face, g.glyphId, level ) )
 				{
 					if( bmp->empty )
 						continue;
@@ -647,8 +1092,6 @@ FFResult TextSource::ProcessOpenGL( ProcessOpenGLStruct* pGL )
 					if( !slot )
 						atlasFull = true;
 				}
-				else
-					pendingGlyphs = true;
 			}
 			// While the wanted spread level is being generated, use any level we already have.
 			for( int l = kNumSpreadLevels - 1; !slot && l >= 0; --l )
@@ -657,6 +1100,7 @@ FFResult TextSource::ProcessOpenGL( ProcessOpenGLStruct* pGL )
 				continue;
 
 			minLevelUsed         = std::min( minLevelUsed, slot->level );
+			minGlyphScale        = std::min( minGlyphScale, st.scale );
 			const SpreadLevel& L = spreadLevel( slot->level );
 			GlyphInstance inst;
 			inst.planeL        = slot->planeLeft;
@@ -675,8 +1119,13 @@ FFResult TextSource::ProcessOpenGL( ProcessOpenGLStruct* pGL )
 			inst.index         = g.charIndex / lastIdx;
 			inst.pxPerAtlasPx  = size * st.scale / L.emPx;
 			inst.spreadAtlasPx = (float)L.spreadPx;
+			inst.tintR         = st.tint.r;
+			inst.tintG         = st.tint.g;
+			inst.tintB         = st.tint.b;
+			inst.tintAmount    = st.tintAmount;
 			instances.push_back( inst );
 		}
+
 		// Queue the rest of Latin-1 behind the visible glyphs, so typing new text
 		// rarely has to wait for glyph generation.
 		const uint64_t warmKey = ( (uint64_t)face->id() << 8 ) | (uint64_t)level;
@@ -687,20 +1136,20 @@ FFResult TextSource::ProcessOpenGL( ProcessOpenGLStruct* pGL )
 			{
 				hb_codepoint_t gid = 0;
 				if( ( cp < 0x7F || cp > 0xA0 ) && hb_font_get_nominal_glyph( face->hbFont(), cp, &gid ) )
-					cache.get( face, gid, level );
+					cache.get( face, gid, level, false );
 			}
 		}
-
 		if( atlasFull )
-		{
 			atlas.clear();// rebuilt from the CPU cache over the next frames
-			pendingGlyphs = true;
-		}
 
-		// The field reaches spreadEm * (glyph size in px); effects beyond that are clamped.
+		// The field reaches spreadEm * glyph size; effects beyond that are clamped.
+		style.clampTo( spreadLevel( minLevelUsed ).spreadEm * size * std::max( 0.05f, minGlyphScale ) );
 		(void)maxScale;
-		style.clampTo( spreadLevel( minLevelUsed ).spreadEm * size );
-		transform.sizePx = size;
+		transform.sizePx    = size;
+		transform.boxLeft   = layout.left;
+		transform.boxTop    = layout.top;
+		transform.boxRight  = layout.right;
+		transform.boxBottom = layout.bottom;
 	}
 
 	transform.originX  = currentViewport.width * 0.5f + values[ P_POS_X ];
@@ -708,7 +1157,22 @@ FFResult TextSource::ProcessOpenGL( ProcessOpenGLStruct* pGL )
 	transform.rotation = values[ P_ROTATION ] * 3.14159265f / 180.0f;
 
 	renderer.render( currentViewport, pGL->HostFBO, instances, transform, style, atlas.texture(), atlas.size() );
+
+	if( !live )
+	{
+		live = true;
+		updateVisibility( true );
+	}
+	if( !loggedStartup && face )
+	{
+		loggedStartup     = true;
+		const double life = std::chrono::duration< double, std::milli >( std::chrono::steady_clock::now() - createdAt ).count();
+		const double frame = std::chrono::duration< double, std::milli >( std::chrono::steady_clock::now() - frameStart ).count();
+		char msg[ 200 ];
+		std::snprintf( msg, sizeof( msg ), "Text+: instance ready after %.1f ms (InitGL %.1f ms, first frame %.1f ms)", life, initGLMs, frame );
+		FFGLLog::LogToHost( msg );
+	}
 	return FF_SUCCESS;
 }
 
-}//namespace kontur
+}//namespace textplus

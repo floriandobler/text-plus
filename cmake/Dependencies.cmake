@@ -33,8 +33,8 @@ FetchContent_Declare(freetype
     GIT_SHALLOW    TRUE
 )
 FetchContent_MakeAvailable(freetype)
-add_library(kontur_freetype INTERFACE)
-target_link_libraries(kontur_freetype INTERFACE freetype)
+add_library(tp_freetype INTERFACE)
+target_link_libraries(tp_freetype INTERFACE freetype)
 
 # --- HarfBuzz: amalgamated single-file build, OpenType functions only --------
 FetchContent_Declare(harfbuzz
@@ -44,11 +44,11 @@ FetchContent_Declare(harfbuzz
     SOURCE_SUBDIR  this-directory-does-not-exist
 )
 FetchContent_MakeAvailable(harfbuzz)
-add_library(kontur_harfbuzz STATIC ${harfbuzz_SOURCE_DIR}/src/harfbuzz.cc)
-target_include_directories(kontur_harfbuzz PUBLIC ${harfbuzz_SOURCE_DIR}/src)
-set_target_properties(kontur_harfbuzz PROPERTIES CXX_STANDARD 17)
+add_library(tp_harfbuzz STATIC ${harfbuzz_SOURCE_DIR}/src/harfbuzz.cc)
+target_include_directories(tp_harfbuzz PUBLIC ${harfbuzz_SOURCE_DIR}/src)
+set_target_properties(tp_harfbuzz PROPERTIES CXX_STANDARD 17)
 if(NOT MSVC)
-    target_compile_options(kontur_harfbuzz PRIVATE -w)
+    target_compile_options(tp_harfbuzz PRIVATE -w)
 endif()
 
 # --- msdfgen core -------------------------------------------------------------
@@ -60,9 +60,9 @@ FetchContent_Declare(msdfgen
 )
 FetchContent_MakeAvailable(msdfgen)
 file(GLOB MSDFGEN_CORE_SOURCES ${msdfgen_SOURCE_DIR}/core/*.cpp)
-add_library(kontur_msdfgen STATIC ${MSDFGEN_CORE_SOURCES})
-target_include_directories(kontur_msdfgen PUBLIC ${msdfgen_SOURCE_DIR})
-target_compile_definitions(kontur_msdfgen PUBLIC MSDFGEN_PUBLIC= MSDFGEN_USE_CPP11)
+add_library(tp_msdfgen STATIC ${MSDFGEN_CORE_SOURCES})
+target_include_directories(tp_msdfgen PUBLIC ${msdfgen_SOURCE_DIR})
+target_compile_definitions(tp_msdfgen PUBLIC MSDFGEN_PUBLIC= MSDFGEN_USE_CPP11)
 if(NOT MSVC)
-    target_compile_options(kontur_msdfgen PRIVATE -w)
+    target_compile_options(tp_msdfgen PRIVATE -w)
 endif()

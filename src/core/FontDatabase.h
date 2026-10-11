@@ -15,7 +15,7 @@
 #include <thread>
 #include <vector>
 
-namespace kontur
+namespace textplus
 {
 
 struct FontEntry
@@ -57,7 +57,9 @@ public:
 
 	// Resolves "Family / Style", "Family Style" (prefix match) or partial names.
 	// Falls back to a sensible default font when nothing matches.
-	std::optional< FontEntry > resolve( const std::string& query ) const;
+	// `matched` (optional) tells whether the query found a family; false means
+	// the result is only the fallback default font.
+	std::optional< FontEntry > resolve( const std::string& query, bool* matched = nullptr ) const;
 	std::optional< FontEntry > defaultFont() const;
 
 	// Reads the faces of a single font file (for the "Font File" parameter). Synchronous.
@@ -83,4 +85,4 @@ private:
 // Lower-case, strip spaces/dashes/underscores. Used for fuzzy matching.
 std::string normalizeFontName( const std::string& s );
 
-}//namespace kontur
+}//namespace textplus

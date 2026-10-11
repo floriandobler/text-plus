@@ -13,11 +13,12 @@
 //    box width (area text) Auto centres the box on the anchor.
 
 #include "FontFace.h"
+#include "Utf8.h"
 
 #include <string>
 #include <vector>
 
-namespace kontur
+namespace textplus
 {
 
 enum class Align
@@ -64,12 +65,13 @@ struct LayoutParams
 	bool kerning           = true;
 	bool ligatures         = true;
 	bool pipeIsNewline     = true;
+	bool markup            = true;// inline colours {#ff8800}...{/}
 
 	bool operator==( const LayoutParams& o ) const
 	{
 		return text == o.text && sizePx == o.sizePx && trackingPermille == o.trackingPermille && leadingPercent == o.leadingPercent &&
 			boxWidth == o.boxWidth && boxHeight == o.boxHeight && align == o.align && anchorH == o.anchorH && anchorV == o.anchorV &&
-			fit == o.fit && kerning == o.kerning && ligatures == o.ligatures && pipeIsNewline == o.pipeIsNewline;
+			fit == o.fit && kerning == o.kerning && ligatures == o.ligatures && pipeIsNewline == o.pipeIsNewline && markup == o.markup;
 	}
 	bool operator!=( const LayoutParams& o ) const { return !( *this == o ); }
 };
@@ -82,11 +84,13 @@ struct LaidGlyph
 	int wordIndex = 0;
 	int lineIndex = 0;
 	bool visible  = true;// false for spaces and other blank glyphs
+	int colorIndex = -1; // inline colour (index into LayoutResult::palette), -1 = none
 };
 
 struct LayoutResult
 {
 	std::vector< LaidGlyph > glyphs;
+	std::vector< Rgb > palette;// inline colours
 	float sizePx   = 0;// effective size after auto-fit
 	int numChars   = 0;
 	int numWords   = 0;
@@ -98,4 +102,4 @@ struct LayoutResult
 
 LayoutResult layoutText( const FontFace& face, const LayoutParams& params );
 
-}//namespace kontur
+}//namespace textplus

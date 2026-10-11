@@ -6,7 +6,7 @@
 
 #include <hb.h>
 
-namespace kontur
+namespace textplus
 {
 namespace
 {
@@ -19,11 +19,12 @@ struct ShapedGlyph
 	float yOffEm  = 0;// up
 	bool space    = false;
 	bool breakAfter = false;
+	int colorIndex = -1;
 };
 
 using ShapedPara = std::vector< ShapedGlyph >;
 
-std::vector< ShapedPara > shape( const FontFace& face, const LayoutParams& p )
+std::vector< ShapedPara > shape( const FontFace& face, const LayoutParams& p, std::vector< Rgb >& palette )
 {
 	std::vector< ShapedPara > result;
 	const float upem = (float)face.unitsPerEm();
@@ -44,8 +45,9 @@ std::vector< ShapedPara > shape( const FontFace& face, const LayoutParams& p )
 	}
 
 	hb_buffer_t* buf = hb_buffer_create();
-	for( const std::string& para : splitParagraphs( p.text, p.pipeIsNewline ) )
+	for( const MarkedParagraph& marked : parseMarkedText( p.text, p.pipeIsNewline, p.markup, palette ) )
 	{
+		const std::string& para = marked.text;
 		ShapedPara out;
 		if( !para.empty() )
 		{
@@ -68,6 +70,8 @@ std::vector< ShapedPara > shape( const FontFace& face, const LayoutParams& p )
 				uint32_t cp = decodeUtf8At( para, info[ i ].cluster );
 				g.space     = isBreakingSpace( cp ) || cp == 0xA0 || cp == 0x202F;
 				g.breakAfter = isBreakingSpace( cp ) || cp == '-' || cp == 0x2010 || cp == 0x2013 || cp == 0x2014 || cp == 0x200B;
+				if( info[ i ].cluster < marked.colorOfByte.size() )
+					g.colorIndex = marked.colorOfByte[ info[ i ].cluster ];
 				out.push_back( g );
 			}
 		}
@@ -244,6 +248,7 @@ LayoutResult place( const FontFace& face, const LayoutParams& p, const std::vect
 			lg.y         = y - sg.yOffEm * size;
 			lg.lineIndex = li;
 			lg.visible   = !sg.space;
+			lg.colorIndex = sg.colorIndex;
 			if( lg.visible )
 			{
 				if( prevSpace )
@@ -316,11 +321,8 @@ LayoutResult place( const FontFace& face, const LayoutParams& p, const std::vect
 	return r;
 }
 
-}//namespace
-
-LayoutResult layoutText( const FontFace& face, const LayoutParams& p )
+LayoutResult layoutShaped( const FontFace& face, const LayoutParams& p, const std::vector< ShapedPara >& paras )
 {
-	std::vector< ShapedPara > paras = shape( face, p );
 	float size                      = std::max( 0.5f, p.sizePx );
 
 	switch( p.fit )
@@ -366,4 +368,15 @@ LayoutResult layoutText( const FontFace& face, const LayoutParams& p )
 	return place( face, p, paras, size, true );
 }
 
-}//namespace kontur
+}//namespace
+
+LayoutResult layoutText( const FontFace& face, const LayoutParams& p )
+{
+	std::vector< Rgb > palette;
+	std::vector< ShapedPara > paras = shape( face, p, palette );
+	LayoutResult r                  = layoutShaped( face, p, paras );
+	r.palette                       = std::move( palette );
+	return r;
+}
+
+}//namespace textplus

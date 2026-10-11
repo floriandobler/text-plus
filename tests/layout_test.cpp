@@ -10,7 +10,7 @@
 #include <cstdio>
 #include <hb.h>
 
-using namespace kontur;
+using namespace textplus;
 
 static int g_failures = 0;
 #define CHECK( cond, ... )                                   \
@@ -77,8 +77,11 @@ int main( int argc, char** argv )
 	CHECK( partial && partial->family == "Cantarell" && partial->style == "Regular", "resolve partial -> %s", partial ? partial->displayName().c_str() : "none" );
 	auto interBI = db.resolve( "Inter / italic bold" );
 	CHECK( interBI && interBI->weight == 700 && interBI->italic, "resolve reordered style -> %s", interBI ? interBI->displayName().c_str() : "none" );
-	auto none = db.resolve( "this font does not exist" );
-	CHECK( none.has_value(), "resolve falls back to a default" );
+	bool matched = true;
+	auto none    = db.resolve( "this font does not exist", &matched );
+	CHECK( none.has_value() && !matched, "resolve falls back to a default and says so" );
+	auto cond = db.resolve( "DejaVu Sans Condensed / Bold", &matched );
+	CHECK( cond && matched && cond->family == "DejaVu Sans" && cond->style == "Condensed Bold", "style part in family -> %s", cond ? cond->displayName().c_str() : "none" );
 	std::printf( "ok   resolve\n" );
 
 	auto face = FontFace::get( *db.resolve( "DejaVu Sans / Book" ) );
@@ -167,21 +170,101 @@ int main( int argc, char** argv )
 	CHECK( kOn < kOff, "kerning tightens AV (%.2f vs %.2f)", kOn, kOff );
 	std::printf( "ok   layout\n" );
 
-	// --- animation is a pure function of progress ---
-	p.text = "abcd";
+	// --- inline colour markup ---
+	p.text   = "a{#ff0000}bc{/}d{{e";
+	auto mk  = layoutText( *face, p );
+	CHECK( mk.numChars == 6 && mk.palette.size() == 1, "markup stripped: chars %d palette %zu", mk.numChars, mk.palette.size() );
+	CHECK( mk.glyphs[ 0 ].colorIndex == -1 && mk.glyphs[ 1 ].colorIndex == 0 && mk.glyphs[ 2 ].colorIndex == 0 && mk.glyphs[ 3 ].colorIndex == -1, "colour spans" );
+	CHECK( std::fabs( mk.palette[ 0 ].r - 1.0f ) < 1e-6 && mk.palette[ 0 ].g == 0.0f, "palette colour" );
+	p.markup = false;
+	CHECK( layoutText( *face, p ).numChars > 6, "markup off keeps braces" );
+	p.markup = true;
+	std::printf( "ok   markup\n" );
+
+	// --- animators: pure functions of progress / beats ---
+	p.text   = "abcd";
 	auto lay = layoutText( *face, p );
-	AnimParams ap;
-	ap.mode     = AnimMode::Typewriter;
-	ap.progress = 0.5f;
 	std::vector< GlyphState > st;
-	animateGlyphs( lay, ap, st );
-	CHECK( st[ 0 ].alpha == 1 && st[ 1 ].alpha == 1 && st[ 2 ].alpha == 0 && st[ 3 ].alpha == 0, "typewriter half" );
-	ap.progress = 1.0f;
-	animateGlyphs( lay, ap, st );
+	AnimatorParams tw;
+	tw.mode     = AnimMode::SequenceIn;
+	tw.spread   = 0;// typewriter
+	tw.opacity  = 0;
+	tw.progress = 0.5f;
+	initGlyphStates( lay, st );
+	applyAnimator( lay, tw, 0, st );
+	CHECK( st[ 0 ].alpha == 1 && st[ 1 ].alpha == 1 && st[ 2 ].alpha == 0 && st[ 3 ].alpha == 0, "typewriter half: %g %g %g %g", st[ 0 ].alpha, st[ 1 ].alpha, st[ 2 ].alpha, st[ 3 ].alpha );
+	tw.progress = 1.0f;
+	initGlyphStates( lay, st );
+	applyAnimator( lay, tw, 0, st );
 	CHECK( st[ 3 ].alpha == 1, "typewriter full" );
-	ap.progress = 0.0f;
-	animateGlyphs( lay, ap, st );
+	tw.progress = 0.0f;
+	initGlyphStates( lay, st );
+	applyAnimator( lay, tw, 0, st );
 	CHECK( st[ 0 ].alpha == 0, "typewriter empty" );
+
+	AnimatorParams rise;
+	rise.mode     = AnimMode::SequenceIn;
+	rise.spread   = 2;
+	rise.offsetY  = 100;
+	rise.progress = 0.0f;
+	initGlyphStates( lay, st );
+	applyAnimator( lay, rise, 0, st );
+	CHECK( std::fabs( st[ 0 ].dy - 100 ) < 1e-3 && std::fabs( st[ 3 ].dy - 100 ) < 1e-3, "sequence in at 0: all away" );
+	rise.progress = 1.0f;
+	initGlyphStates( lay, st );
+	applyAnimator( lay, rise, 0, st );
+	CHECK( std::fabs( st[ 0 ].dy ) < 1e-3 && std::fabs( st[ 3 ].dy ) < 1e-3, "sequence in at 1: all at rest" );
+	rise.order    = AnimOrder::Reverse;
+	rise.progress = 0.3f;
+	initGlyphStates( lay, st );
+	applyAnimator( lay, rise, 0, st );
+	CHECK( st[ 3 ].dy < st[ 0 ].dy, "reverse order: last glyph arrives first" );
+
+	AnimatorParams pop;
+	pop.mode     = AnimMode::SequenceIn;
+	pop.ease     = AnimEase::Overshoot;
+	pop.scale    = 0;
+	pop.spread   = 4;
+	pop.progress = 0.45f;
+	initGlyphStates( lay, st );
+	applyAnimator( lay, pop, 0, st );
+	float maxS = 0;
+	for( auto& g : st )
+		maxS = std::max( maxS, g.scale );
+	CHECK( maxS > 1.0f && maxS < 1.2f, "overshoot passes 100 %% (max scale %.3f)", maxS );
+
+	AnimatorParams wave;
+	wave.mode    = AnimMode::Wave;
+	wave.offsetY = 10;
+	wave.spread  = 4;
+	initGlyphStates( lay, st );
+	applyAnimator( lay, wave, 0.25, st );
+	float a1 = st[ 0 ].dy;
+	initGlyphStates( lay, st );
+	applyAnimator( lay, wave, 0.25, st );
+	CHECK( st[ 0 ].dy == a1 && std::fabs( a1 - 10 ) < 1e-3, "wave deterministic, peak at a quarter beat (%.3f)", a1 );
+
+	AnimatorParams rnd;
+	rnd.mode    = AnimMode::Random;
+	rnd.offsetX = 10;
+	rnd.speed   = 0;
+	initGlyphStates( lay, st );
+	applyAnimator( lay, rnd, 3.7, st );
+	float r0 = st[ 0 ].dx;
+	initGlyphStates( lay, st );
+	applyAnimator( lay, rnd, 9.1, st );
+	CHECK( st[ 0 ].dx == r0 && std::fabs( r0 ) <= 10.0f, "random with speed 0 is static" );
+
+	// two animators stack; colour layers
+	AnimatorParams col;
+	col.mode        = AnimMode::Constant;
+	col.progress    = 1.0f;
+	col.colorAmount = 1.0f;
+	col.color       = Rgb{ 0, 1, 0 };
+	initGlyphStates( lay, st );
+	applyAnimator( lay, rise, 0, st );
+	applyAnimator( lay, col, 0, st );
+	CHECK( st[ 1 ].tintAmount == 1.0f && st[ 1 ].tint.g == 1.0f, "colour tint" );
 	std::printf( "ok   animation\n" );
 
 	// --- glyph SDFs: TrueType and CFF outlines have opposite orientation ---

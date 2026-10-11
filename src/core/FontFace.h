@@ -18,7 +18,7 @@ struct hb_face_t;
 struct hb_font_t;
 struct hb_blob_t;
 
-namespace kontur
+namespace textplus
 {
 
 struct FontMetrics
@@ -62,4 +62,4 @@ private:
 	FontMetrics fontMetrics;
 };
 
-}//namespace kontur
+}//namespace textplus

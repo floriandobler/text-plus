@@ -1,11 +1,12 @@
-# Kontur Text
+# Text+
 
 Text-Source für Resolume Arena/Avenue 7 als FFGL-Plugin. Rendert Text über ein
 Distanzfeld: Outlines wachsen nur nach außen und fressen nie in die Buchstaben,
-Schatten und Glow entstehen ohne Blur-Pässe, und die Kanten bleiben in jeder
-Größe scharf.
+Schatten und Glow entstehen ohne Blur-Pässe, die Kanten bleiben in jeder Größe
+scharf, und zwei Animatoren bewegen, skalieren, drehen, blenden und färben den
+Text pro Zeichen, Wort oder Zeile.
 
-Stand: Version 0.1, Basis. macOS zuerst (Universal Binary), Windows vorbereitet.
+Stand: Version 0.2. macOS zuerst (Universal Binary), Windows vorbereitet.
 
 ## Bauen und installieren (macOS)
 
@@ -18,40 +19,52 @@ brew install cmake
 ```
 
 Das Skript lädt beim ersten Lauf FFGL SDK, FreeType, HarfBuzz und msdfgen per git
-(ein paar Minuten), baut `KonturText.bundle` für arm64 und x86_64, signiert ad hoc
-und kopiert es nach `~/Documents/Resolume Arena/Extra Effects`. Danach Resolume neu
-starten; das Plugin heißt **Kontur Text** und liegt bei den Sources.
+(ein paar Minuten), baut `TextPlus.bundle` für arm64 und x86_64, signiert ad hoc
+und kopiert es nach `~/Documents/Resolume Arena/Extra Effects`. Ein altes
+`KonturText.bundle` (Version 0.1) entfernt es dabei, denn beide tragen dieselbe
+Plugin-ID. Danach Resolume neu starten; das Plugin heißt **Text+** und liegt bei
+den Sources direkt neben Text Animator und Text Block.
 
 Nutzt du einen anderen Plugin-Ordner (Resolume → Preferences → Video → FFGL),
-kopiere `build-mac/KonturText.bundle` dorthin.
+kopiere `build-mac/TextPlus.bundle` dorthin.
 
 ## Parameter
 
 | Gruppe | Parameter | Werte |
 | --- | --- | --- |
-| Text | Text | Zeilenumbruch: echte Umbrüche, `\n` oder `\|` |
-| Text | \| = New Line | `\|` als Zeilentrenner an/aus |
-| Font | Font | `Familie / Stil`, z. B. `Helvetica Neue / Bold`. Tippen geht: `din bold`, `inter semibold italic` |
+| Text | Text | Zeilenumbruch: `\|` (bei „\| = New Line“), `\n` oder echte Umbrüche |
+| Text | Color Tags | `{#ff8800}farbig{/}` färbt Textstellen; `{{` für ein echtes `{` |
+| Text | Text File | .txt-Datei als Textquelle, wird bei Änderung automatisch neu geladen |
+| Text | Slides | Off, Each Line, Blocks (`\|\|` oder Leerzeile trennt) |
+| Text | Slide, Advance | Nummer der Slide; weiterschalten per Parameter, Next/Previous-Buttons oder alle N Beats |
+| Font | Font | `Familie / Stil`, z. B. `Helvetica Neue / Bold`. Tippen geht: `din bold` |
 | Font | Family, Style | Auswahllisten, schreiben ins Feld „Font“ |
-| Font | Font File | .ttf/.otf/.ttc direkt laden (z. B. Show-Fonts, die nicht installiert sind) |
+| Font | Font File | .ttf/.otf/.ttc direkt laden |
 | Font | Size | px |
-| Layout | Position X / Y | px ab Bildmitte, Y nach oben |
-| Layout | Rotation | Grad, gegen den Uhrzeigersinn |
-| Layout | Align | Left, Center, Right, Justify |
-| Layout | Anchor H | Auto, Left, Center, Right. Auto: bei freiem Text auf der Ausrichtungsseite, bei Box-Text Box-Mitte |
-| Layout | Anchor V | Top, Middle, Bottom, First Baseline, Last Baseline |
-| Layout | Box Width / Height | px, 0 = kein Umbruch |
-| Layout | Auto Fit | Off, Shrink to Box, Fit Box Width |
-| Layout | Tracking | 1/1000 em |
-| Layout | Leading | % der Schriftgröße |
-| Layout | Kerning, Ligatures | an/aus |
-| Fill | Fill Color | Farbe mit Alpha. Alpha 0 = hohle Schrift |
+| Layout | Position X / Y, Rotation | px ab Bildmitte (Y nach oben), Grad |
+| Layout | Align, Anchor H, Anchor V | Ausrichtung und Ankerpunkt, getrennt einstellbar |
+| Layout | Box Width / Height, Auto Fit | Umbruch in einer Box, Verkleinern oder Einpassen |
+| Layout | Tracking, Leading, Kerning, Ligatures | 1/1000 em, % der Größe |
+| Fill | Fill Mode | Solid, Gradient (Block), Gradient (Characters) |
+| Fill | Fill Color, Fill Color 2, Gradient Angle | Alpha 0 = hohle Schrift |
 | Outline | Width, Position, Corners, Color | px; Outside/Center/Inside; Round/Sharp |
 | Outline 2 | Width, Color | zweite Kontur außen um die erste |
 | Shadow | Color, Distance, Angle, Softness, Spread | Distance 0 = aus |
 | Glow | Color, Radius, Strength | Radius 0 = aus |
-| Animation | Animation, Unit, Progress, Spread, Amount, Speed | Off/Typewriter/Fade/Rise/Wave; Zeichen/Wort/Zeile |
+| Animator 1, 2 | Preset | lädt Werte, springt danach zurück auf „Load preset…“ |
+| Animator 1, 2 | Mode | Off, Sequence In, Sequence Out, Wave, Random, Constant |
+| Animator 1, 2 | Unit, Order | Character/Word/Line; Forward, Reverse, From Center, From Edges, Random |
+| Animator 1, 2 | Drive, Progress, Duration | Progress-Regler, Neustart bei Slide-Wechsel oder Loop (Dauer in Beats) |
+| Animator 1, 2 | Spread, Ease, Speed | gleichzeitig bewegte Einheiten bzw. Wellenlänge; Linear/Smooth/Ease Out/Overshoot; pro Beat |
+| Animator 1, 2 | Offset X/Y, Scale, Rotation, Opacity, Color | der „Weg“-Zustand; Color-Alpha = Stärke der Färbung |
 | Quality | Edge Softness | Anti-Aliasing-Breite in px |
+| Quality | Alpha Output | Straight (Resolume) oder Premultiplied |
+
+Der Animator beschreibt, wo eine Einheit „weg“ ist (versetzt, verkleinert,
+gedreht, unsichtbar, eingefärbt). Sequence In bringt die Einheiten mit Progress
+0 → 1 nacheinander in die Ruhelage, Sequence Out umgekehrt. Wave und Random
+schwingen bzw. zittern im Takt, Constant wendet den Zustand mit der Stärke
+Progress auf alle an. Zwei Animatoren addieren sich.
 
 Die Schrift wird als Text gespeichert, nicht als Listen-Index. Kompositionen laden
 deshalb auch dann die richtige Schrift, wenn inzwischen Fonts installiert oder
@@ -64,16 +77,21 @@ vorübergehend die Standardschrift.
 src/core/     plattformneutraler Kern, ohne FFGL und OpenGL
   FontDatabase   Font-Suche (CoreText-URLs auf dem Mac) + FreeType-Scan, Cache auf Platte
   FontFace       Datei-Bytes + HarfBuzz-Font + Metriken
-  TextLayout     HarfBuzz-Shaping, Umbruch, Ausrichtung, Anker, Auto-Fit
-  GlyphCache     MTSDF-Erzeugung mit msdfgen in Worker-Threads, geteilt
+  TextLayout     Farb-Tags, HarfBuzz-Shaping, Umbruch, Ausrichtung, Anker, Auto-Fit
+  GlyphCache     MTSDF-Erzeugung mit msdfgen in Worker-Threads, sichtbare Glyphen zuerst
   Animator       Glyph-Zustände als reine Funktion von Progress/Beat
 src/render/   OpenGL 4.1 Core
   GlyphAtlas     RGBA16F-Atlas pro Instanz, wächst bis 4096²
   TextRenderer   Pass 1: Distanzfeld der Vereinigung (Depth = min. Abstand)
-                 Pass 2: Fill, 2 Outlines, Schatten, Glow, premultiplied
-src/plugin/   FFGL-Adapter (Parameter, Events, dynamische Listen)
+                 Pass 1b: Deckkraft/Farbe pro Glyphe, weich gewichtet (nur bei Bedarf)
+                 Pass 2: Fill, 2 Outlines, Schatten, Glow; nur in der Text-Bounding-Box
+src/plugin/   FFGL-Adapter (Parameter, Presets, Slides, Events, dynamische Listen)
 tests/        Unit-Tests + Headless-FFGL-Host (Linux/EGL)
 ```
+
+Shader werden einmal pro GL-Kontext kompiliert und von allen Instanzen geteilt.
+Jede Instanz schreibt beim Start eine Zeile ins Resolume-Log
+(„Text+: instance ready after … ms“).
 
 Ausführlich: Dokument „Resolume Text-Plugin: Recherche & Architektur“.
 
@@ -82,17 +100,20 @@ Ausführlich: Dokument „Resolume Text-Plugin: Recherche & Architektur“.
 `./scripts/run_tests_linux.sh` baut Kern, Plugin und Test-Host, führt die
 Unit-Tests aus und rendert Beispielbilder nach `out/`. Der Test-Host lädt das
 Plugin wie Resolume über `plugMain`, rendert in einem OpenGL-4.1-Core-Kontext
-(Mesa, ohne GPU) und meldet, ob das Plugin GL-Zustand verändert zurücklässt oder
-die Premultiplied-Alpha-Regel verletzt.
+(Mesa, ohne GPU) und meldet, ob das Plugin GL-Zustand verändert zurücklässt.
 
 ```sh
-./build/ffgl_test_host build/KonturText.so --list                 # Parameterliste
-./build/ffgl_test_host build/KonturText.so out/x.png 1280 720 \
-    "Text=Hallo" "Outline Width=20" "Glow Radius=40"
+./build/ffgl_test_host build/TextPlus.so --list                 # Parameterliste
+./build/ffgl_test_host build/TextPlus.so out/x.png 1280 720 \
+    "Text=Hallo" "Outline Width=20" "Glow Radius=40" @bg=0.9,0.3,0.1
+# "+Name=Wert" setzt einen Wert erst nach einigen Frames (wie eine Nutzeraktion),
+# "@dt=0.0166 @frames=90" lässt die Zeit laufen, "@print=A1 Mode" gibt Werte aus.
 ```
 
-## Bekannte Grenzen (Version 0.1)
+## Bekannte Grenzen (Version 0.2)
 
+- Resolumes Textfeld für Plugins ist einzeilig: Zeilen per `|` trennen oder eine
+  Text-Datei verwenden.
 - Effekte reichen bis 1 em um die Glyphe (Distanzfeld-Spread). Darüber hinaus
   werden Outline, Glow und Schatten begrenzt.
 - Rechts-nach-links-Text wird geshaped, aber nicht bidirektional umgebrochen.

@@ -7,7 +7,7 @@
 #include <string>
 #include <sys/stat.h>
 
-namespace kontur
+namespace textplus
 {
 namespace
 {
@@ -69,10 +69,10 @@ std::string platformCacheDirectory()
 		base = std::string( home ) + "/.cache";
 	if( base.empty() )
 		return {};
-	std::string dir = base + "/kontur-text";
+	std::string dir = base + "/text-plus";
 	mkdir( base.c_str(), 0755 );
 	mkdir( dir.c_str(), 0755 );
 	return dir;
 }
 
-}//namespace kontur
+}//namespace textplus
