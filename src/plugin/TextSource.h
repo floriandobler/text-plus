@@ -41,43 +41,59 @@ enum AnimParam : unsigned int
 	AP_COUNT
 };
 
+// Parameters of one line style ("Line 2", "Line 3+"), in order.
+enum LineParam : unsigned int
+{
+	LP_MODE,    // Same as the line above / Own
+	LP_WEIGHT,  // styles of the effective family (writes LP_FONT)
+	LP_FONT,    // text: "" = main font, "Bold" = style of the main family, "Family / Style" = other font
+	LP_SIZE,    // % of the main size
+	LP_COLOR_H, // alpha = how strongly the colour replaces the fill
+	LP_COLOR_S,
+	LP_COLOR_B,
+	LP_COLOR_A,
+	LP_TRACKING,// added to the main tracking
+	LP_SPACING, // extra space above, % of the main size
+	LP_COUNT
+};
+
+// Order = order in Resolume: content, look, motion, set-once options.
 enum ParamId : unsigned int
 {
 	// Text
 	P_TEXT,
-	P_LINE_FIRST,                    // "Line 2" .. "Line 10": extra text fields, shown one by one with "+ Line"
+	P_LINE_FIRST,                    // "Text 2" .. "Text 10": extra text fields, shown one by one with "+ Line"
 	P_LINE_LAST = P_LINE_FIRST + 8,
 	P_ADD_LINE,
 	P_REMOVE_LINE,
-	P_PIPE_NEWLINE,
-	P_MARKUP,
 	P_TEXT_FILE,
-	P_CSV_HEADER,
 	P_SLIDES,
 	P_SLIDE,// position 0..1, split into equal shares per slide (BPM sync friendly)
 	P_NEXT_SLIDE,
 	P_PREV_SLIDE,
 	P_REPLAY,// beats; > 0 replays the sequence animators on every slide change
 	// Font
-	P_FONT,
 	P_FAMILY,
 	P_STYLE,
-	P_FONT_FILE,
 	P_SIZE,
+	P_FONT,
+	P_FONT_FILE,
+	// Line styles
+	P_L2,
+	P_L3 = P_L2 + LP_COUNT,
 	// Layout
-	P_POS_X,
+	P_POS_X = P_L3 + LP_COUNT,
 	P_POS_Y,
 	P_ROTATION,
 	P_ALIGN,
 	P_ANCHOR_H,
 	P_ANCHOR_V,
+	P_WRAP,
 	P_BOX_WIDTH,
 	P_BOX_HEIGHT,
 	P_FIT,
 	P_TRACKING,
 	P_LEADING,
-	P_KERNING,
-	P_LIGATURES,
 	// Fill
 	P_FILL_MODE,
 	P_FILL_H,
@@ -89,7 +105,7 @@ enum ParamId : unsigned int
 	P_FILL2_B,
 	P_FILL2_A,
 	P_GRAD_ANGLE,
-	// Outline 1
+	// Outline (two bands)
 	P_OL1_WIDTH,
 	P_OL1_POSITION,
 	P_OL_CORNERS,
@@ -97,7 +113,6 @@ enum ParamId : unsigned int
 	P_OL1_S,
 	P_OL1_B,
 	P_OL1_A,
-	// Outline 2
 	P_OL2_WIDTH,
 	P_OL2_H,
 	P_OL2_S,
@@ -122,11 +137,19 @@ enum ParamId : unsigned int
 	// Animators
 	P_A1,
 	P_A2 = P_A1 + AP_COUNT,
-	// Quality
-	P_EDGE = P_A2 + AP_COUNT,
+	// Options (set once)
+	P_PIPE_NEWLINE = P_A2 + AP_COUNT,
+	P_MARKUP,
+	P_CSV_HEADER,
+	P_KERNING,
+	P_LIGATURES,
+	P_EDGE,
 
 	P_COUNT
 };
+
+constexpr int kNumLineStyles = 2;// "Line 2", "Line 3+"
+constexpr unsigned lineParam( int style, LineParam p ) { return ( style == 0 ? P_L2 : P_L3 ) + p; }// style 0 = Line 2
 
 constexpr int kNumAnimators = 2;
 inline unsigned animParam( int animator, AnimParam p ) { return ( animator == 0 ? P_A1 : P_A2 ) + p; }
@@ -193,6 +216,20 @@ private:
 	std::string textBuffers[ P_COUNT ], displayBuffers[ P_COUNT ];
 	bool live = false;// first frame rendered: value changes now come from the user
 
+	// Line styles (index 0 = "Line 2", 1 = "Line 3+")
+	struct LineFont
+	{
+		std::string text;                 // LP_FONT
+		std::shared_ptr< FontFace > face; // resolved; nullptr = main face
+		bool dirty = true;
+		std::vector< FontEntry > weightMenu;
+		std::string weightMenuKey;
+	};
+	LineFont lineFonts[ kNumLineStyles ];
+	void resolveLineFont( int style );
+	void onWeightPicked( int style, int index );
+	void setLineFontText( int style, const std::string& text, bool raiseEvent );
+
 	// Font state
 	std::shared_ptr< FontFace > face;
 	bool fontDirty      = true;
@@ -234,7 +271,7 @@ private:
 	TextRenderer renderer;
 	std::vector< GlyphState > glyphStates;
 	std::vector< GlyphInstance > instances;
-	uint64_t prewarmedKey = 0;
+	std::vector< uint64_t > prewarmed;// face/level combinations whose Latin-1 glyphs are queued
 };
 
 }//namespace textplus

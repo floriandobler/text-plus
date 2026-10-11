@@ -43,11 +43,11 @@ const char* kGroupFont     = "Font";
 const char* kGroupLayout   = "Layout";
 const char* kGroupFill     = "Fill";
 const char* kGroupOutline  = "Outline";
-const char* kGroupOutline2 = "Outline 2";
 const char* kGroupShadow   = "Shadow";
 const char* kGroupGlow     = "Glow";
 const char* kGroupAnim[ kNumAnimators ] = { "Animator 1", "Animator 2" };
-const char* kGroupQuality  = "Quality";
+const char* kGroupLine[ kNumLineStyles ] = { "Line 2", "Line 3+" };
+const char* kGroupOptions  = "Options";
 
 enum SlidesMode
 {
@@ -224,6 +224,7 @@ static float slidePosition( int index, int count )
 TextSource::TextSource()
 {
 	std::fill( std::begin( hostKnown ), std::end( hostKnown ), std::nanf( "" ) );
+	m_isConnected = false;// left uninitialised by the SDK
 	SetMinInputs( 0 );
 	SetMaxInputs( 0 );
 	defineParameters();
@@ -287,7 +288,7 @@ void TextSource::defineParameters()
 		named( h, name, display );// the hue parameter names the whole colour
 	};
 
-	// Text
+	// Text: what is shown
 	text = "Text+";
 	SetParamInfo( P_TEXT, "Text", FF_TYPE_TEXT, text.c_str() );
 	SetParamGroup( P_TEXT, kGroupText );
@@ -296,16 +297,13 @@ void TextSource::defineParameters()
 	for( int i = 0; i < kExtraLines; ++i )
 	{
 		const unsigned id = P_LINE_FIRST + (unsigned)i;
-		SetParamInfo( id, ( "Line " + std::to_string( i + 2 ) ).c_str(), FF_TYPE_TEXT, "" );
+		SetParamInfo( id, ( "Text " + std::to_string( i + 2 ) ).c_str(), FF_TYPE_TEXT, "" );
 		SetParamGroup( id, kGroupText );
 	}
 	event( P_ADD_LINE, "+ Line", kGroupText );
 	event( P_REMOVE_LINE, "- Line", kGroupText );
-	boolean( P_PIPE_NEWLINE, "| = New Line", kGroupText, true );
-	boolean( P_MARKUP, "Color Tags", kGroupText, true );
 	SetFileParamInfo( P_TEXT_FILE, "Text File", { "txt", "text", "md", "csv", "tsv" }, "" );
 	SetParamGroup( P_TEXT_FILE, kGroupText );
-	boolean( P_CSV_HEADER, "CSV: Skip First Row", kGroupText, true );
 	option( P_SLIDES, "Slides", kGroupText, { "Off", "Each Line", "Blocks (|| or empty line)" }, SLIDES_OFF );
 	// 0..1 split into equal shares: BPM sync on this slider cycles through all
 	// slides and wraps back to the first, whatever the number of slides.
@@ -314,14 +312,30 @@ void TextSource::defineParameters()
 	event( P_PREV_SLIDE, "Previous Slide", kGroupText );
 	range( P_REPLAY, "Replay on Slide Change", kGroupText, 0.0f, 0.0f, 16.0f );
 
-	// Font
-	SetParamInfo( P_FONT, "Font", FF_TYPE_TEXT, "" );
-	SetParamGroup( P_FONT, kGroupFont );
+	// Font: the menus first; "Font" is the stored, typeable name the menus write into
 	option( P_FAMILY, "Family", kGroupFont, { "(scanning fonts...)" }, 0 );
 	option( P_STYLE, "Style", kGroupFont, { "-" }, 0 );
+	range( P_SIZE, "Size", kGroupFont, 160.0f, 4.0f, 2000.0f );
+	SetParamInfo( P_FONT, "Font", FF_TYPE_TEXT, "" );
+	SetParamGroup( P_FONT, kGroupFont );
 	SetFileParamInfo( P_FONT_FILE, "Font File", { "ttf", "otf", "ttc", "otc" }, "" );
 	SetParamGroup( P_FONT_FILE, kGroupFont );
-	range( P_SIZE, "Size", kGroupFont, 160.0f, 4.0f, 2000.0f );
+
+	// Line styles: "Line 2" and "Line 3+" (every line from the third on)
+	for( int l = 0; l < kNumLineStyles; ++l )
+	{
+		const std::string pre = l == 0 ? "L2 " : "L3 ";
+		const char* g         = kGroupLine[ l ];
+		auto id               = [ & ]( LineParam p ) { return lineParam( l, p ); };
+		option( id( LP_MODE ), pre + "Style", g, { l == 0 ? "Same as Line 1" : "Same as Line 2", "Own" }, 0 );
+		option( id( LP_WEIGHT ), pre + "Weight", g, { "-" }, 0 );
+		SetParamInfo( id( LP_FONT ), ( pre + "Font" ).c_str(), FF_TYPE_TEXT, "" );
+		SetParamGroup( id( LP_FONT ), g );
+		range( id( LP_SIZE ), pre + "Size", g, 100.0f, 5.0f, 400.0f );
+		color( id( LP_COLOR_H ), pre + "Color", g, 0.0f, 0.0f, 1.0f, 0.0f );
+		range( id( LP_TRACKING ), pre + "Tracking", g, 0.0f, -300.0f, 1000.0f );
+		range( id( LP_SPACING ), pre + "Spacing", g, 0.0f, -100.0f, 200.0f );
+	}
 
 	// Layout
 	range( P_POS_X, "Position X", kGroupLayout, 0.0f, -4000.0f, 4000.0f );
@@ -330,13 +344,12 @@ void TextSource::defineParameters()
 	option( P_ALIGN, "Align", kGroupLayout, { "Left", "Center", "Right", "Justify" }, 1 );
 	option( P_ANCHOR_H, "Anchor H", kGroupLayout, { "Auto", "Left", "Center", "Right" }, 0 );
 	option( P_ANCHOR_V, "Anchor V", kGroupLayout, { "Top", "Middle", "Bottom", "First Baseline", "Last Baseline" }, 1 );
-	range( P_BOX_WIDTH, "Box Width", kGroupLayout, 0.0f, 0.0f, 8000.0f );
+	option( P_WRAP, "Wrap", kGroupLayout, { "Off", "Box" }, 0 );
+	range( P_BOX_WIDTH, "Box Width", kGroupLayout, 1000.0f, 10.0f, 8000.0f );
 	range( P_BOX_HEIGHT, "Box Height", kGroupLayout, 0.0f, 0.0f, 8000.0f );
 	option( P_FIT, "Auto Fit", kGroupLayout, { "Off", "Shrink to Box", "Fit Box Width" }, 0 );
 	range( P_TRACKING, "Tracking", kGroupLayout, 0.0f, -300.0f, 1000.0f );
 	range( P_LEADING, "Leading", kGroupLayout, 120.0f, 50.0f, 300.0f );
-	boolean( P_KERNING, "Kerning", kGroupLayout, true );
-	boolean( P_LIGATURES, "Ligatures", kGroupLayout, true );
 
 	// Fill
 	option( P_FILL_MODE, "Fill Mode", kGroupFill, { "Solid", "Gradient (Block)", "Gradient (Characters)" }, 0 );
@@ -344,15 +357,13 @@ void TextSource::defineParameters()
 	color( P_FILL2_H, "Fill Color 2", kGroupFill, 0.58f, 0.7f, 1.0f, 1.0f );
 	range( P_GRAD_ANGLE, "Gradient Angle", kGroupFill, 0.0f, -180.0f, 180.0f );
 
-	// Outline 1
+	// Outline: band 1 and, outside it, band 2
 	range( P_OL1_WIDTH, "Outline Width", kGroupOutline, 0.0f, 0.0f, 400.0f );
 	option( P_OL1_POSITION, "Outline Position", kGroupOutline, { "Outside", "Center", "Inside" }, 0 );
 	option( P_OL_CORNERS, "Outline Corners", kGroupOutline, { "Round", "Sharp" }, 0 );
 	color( P_OL1_H, "Outline Color", kGroupOutline, 0.0f, 0.0f, 0.0f, 1.0f );
-
-	// Outline 2
-	range( P_OL2_WIDTH, "Outline 2 Width", kGroupOutline2, 0.0f, 0.0f, 400.0f );
-	color( P_OL2_H, "Outline 2 Color", kGroupOutline2, 0.0f, 0.0f, 1.0f, 1.0f );
+	range( P_OL2_WIDTH, "Outline 2 Width", kGroupOutline, 0.0f, 0.0f, 400.0f );
+	color( P_OL2_H, "Outline 2 Color", kGroupOutline, 0.0f, 0.0f, 1.0f, 1.0f );
 
 	// Shadow (Distance 0 = hidden behind the text, so the default is "off" without a toggle)
 	color( P_SH_H, "Shadow Color", kGroupShadow, 0.0f, 0.0f, 0.0f, 0.6f );
@@ -366,29 +377,34 @@ void TextSource::defineParameters()
 	range( P_GL_RADIUS, "Glow Radius", kGroupGlow, 0.0f, 0.0f, 400.0f );
 	range( P_GL_STRENGTH, "Glow Strength", kGroupGlow, 1.0f, 0.0f, 2.0f );
 
-	// Animators. Internal names are unique ("A1 Mode"), the UI shows short display names.
+	// Animators. Resolume shows the internal names, so they carry the "A1 " prefix.
 	for( int a = 0; a < kNumAnimators; ++a )
 	{
 		const std::string pre = "A" + std::to_string( a + 1 ) + " ";
 		const char* g         = kGroupAnim[ a ];
 		auto id               = [ & ]( AnimParam p ) { return animParam( a, p ); };
-		option( id( AP_PRESET ), pre + "Preset", g, kPresetNames, 0, "Preset" );
-		option( id( AP_MODE ), pre + "Mode", g, { "Off", "Sequence In", "Sequence Out", "Wave", "Random", "Constant" }, 0, "Mode" );
-		option( id( AP_UNIT ), pre + "Unit", g, { "Character", "Word", "Line" }, 0, "Unit" );
-		option( id( AP_ORDER ), pre + "Order", g, { "Forward", "Reverse", "From Center", "From Edges", "Random" }, 0, "Order" );
-		range( id( AP_PROGRESS ), pre + "Progress", g, 1.0f, 0.0f, 1.0f, "Progress" );
-		range( id( AP_SPREAD ), pre + "Spread", g, 3.0f, 0.0f, 50.0f, "Spread" );
-		option( id( AP_EASE ), pre + "Ease", g, { "Linear", "Smooth", "Ease Out", "Overshoot" }, 1, "Ease" );
-		range( id( AP_OFFSET_X ), pre + "Offset X", g, 0.0f, -2000.0f, 2000.0f, "Offset X" );
-		range( id( AP_OFFSET_Y ), pre + "Offset Y", g, 0.0f, -2000.0f, 2000.0f, "Offset Y" );
-		range( id( AP_SCALE ), pre + "Scale", g, 100.0f, 0.0f, 400.0f, "Scale" );
-		range( id( AP_ROTATION ), pre + "Rotation", g, 0.0f, -720.0f, 720.0f, "Rotation" );
-		range( id( AP_OPACITY ), pre + "Opacity", g, 100.0f, 0.0f, 100.0f, "Opacity" );
-		color( id( AP_COLOR_H ), pre + "Color", g, 0.0f, 0.8f, 1.0f, 0.0f, "Color (Alpha = Amount)" );
+		option( id( AP_PRESET ), pre + "Preset", g, kPresetNames, 0 );
+		option( id( AP_MODE ), pre + "Mode", g, { "Off", "Sequence In", "Sequence Out", "Wave", "Random", "Constant" }, 0 );
+		option( id( AP_UNIT ), pre + "Unit", g, { "Character", "Word", "Line" }, 0 );
+		option( id( AP_ORDER ), pre + "Order", g, { "Forward", "Reverse", "From Center", "From Edges", "Random" }, 0 );
+		range( id( AP_PROGRESS ), pre + "Progress", g, 1.0f, 0.0f, 1.0f );
+		range( id( AP_SPREAD ), pre + "Spread", g, 3.0f, 0.0f, 50.0f );
+		option( id( AP_EASE ), pre + "Ease", g, { "Linear", "Smooth", "Ease Out", "Overshoot" }, 1 );
+		range( id( AP_OFFSET_X ), pre + "Offset X", g, 0.0f, -2000.0f, 2000.0f );
+		range( id( AP_OFFSET_Y ), pre + "Offset Y", g, 0.0f, -2000.0f, 2000.0f );
+		range( id( AP_SCALE ), pre + "Scale", g, 100.0f, 0.0f, 400.0f );
+		range( id( AP_ROTATION ), pre + "Rotation", g, 0.0f, -720.0f, 720.0f );
+		range( id( AP_OPACITY ), pre + "Opacity", g, 100.0f, 0.0f, 100.0f );
+		color( id( AP_COLOR_H ), pre + "Color", g, 0.0f, 0.8f, 1.0f, 0.0f );
 	}
 
-	// Quality
-	range( P_EDGE, "Edge Softness", kGroupQuality, 1.0f, 0.25f, 4.0f );
+	// Options: set once, rarely touched
+	boolean( P_PIPE_NEWLINE, "| = New Line", kGroupOptions, true );
+	boolean( P_MARKUP, "Color Tags", kGroupOptions, true );
+	boolean( P_CSV_HEADER, "CSV: Skip First Row", kGroupOptions, true );
+	boolean( P_KERNING, "Kerning", kGroupOptions, true );
+	boolean( P_LIGATURES, "Ligatures", kGroupOptions, true );
+	range( P_EDGE, "Edge Softness", kGroupOptions, 1.0f, 0.25f, 4.0f );
 
 	updateVisibility( false );
 }
@@ -410,9 +426,19 @@ void TextSource::updateVisibility( bool raiseEvent )
 		visibility[ id ] = want;
 		SetParamVisibility( id, v, raiseEvent );
 	};
-	const bool box = values[ P_BOX_WIDTH ] > 0.0f;
+	// Rows appear only through explicit switches, never through slider values,
+	// so the list never jumps under the mouse while dragging.
+	const bool box = (int)values[ P_WRAP ] == 1;
+	show( P_BOX_WIDTH, box );
 	show( P_BOX_HEIGHT, box );
 	show( P_FIT, box );
+
+	for( int l = 0; l < kNumLineStyles; ++l )
+	{
+		const bool own = (int)values[ lineParam( l, LP_MODE ) ] == 1;
+		for( LineParam p : { LP_WEIGHT, LP_FONT, LP_SIZE, LP_COLOR_H, LP_TRACKING, LP_SPACING } )
+			show( lineParam( l, p ), own );
+	}
 
 	for( int i = 0; i < kExtraLines; ++i )
 		show( P_LINE_FIRST + (unsigned)i, i < shownLines );
@@ -421,7 +447,6 @@ void TextSource::updateVisibility( bool raiseEvent )
 
 	const bool slidesOn = csvActive || (int)values[ P_SLIDES ] != SLIDES_OFF;
 	const bool replay   = slidesOn && values[ P_REPLAY ] > 0.0f;
-	show( P_CSV_HEADER, csvActive );
 	show( P_SLIDES, !csvActive );// a CSV is always one slide per row
 	show( P_SLIDE, slidesOn );
 	show( P_NEXT_SLIDE, slidesOn );
@@ -477,6 +502,16 @@ FFResult TextSource::SetFloatParameter( unsigned int index, float value )
 			index == P_FAMILY ? onFamilyPicked( (int)value ) : onStylePicked( (int)value );
 		return FF_SUCCESS;
 	}
+	for( int l = 0; l < kNumLineStyles; ++l )
+		if( index == lineParam( l, LP_WEIGHT ) )
+		{
+			if( !menusPopulated || !changed )
+				return FF_SUCCESS;
+			values[ index ] = value;
+			if( live )
+				onWeightPicked( l, (int)value );
+			return FF_SUCCESS;
+		}
 	for( int a = 0; a < kNumAnimators; ++a )
 		if( index == animParam( a, AP_PRESET ) )
 		{
@@ -539,6 +574,12 @@ FFResult TextSource::SetFloatParameter( unsigned int index, float value )
 FFResult TextSource::SetTextParameter( unsigned int index, const char* value )
 {
 	std::string v = value ? value : "";
+	for( int l = 0; l < kNumLineStyles; ++l )
+		if( index == lineParam( l, LP_FONT ) )
+		{
+			setLineFontText( l, v, false );
+			return FF_SUCCESS;
+		}
 	if( index >= P_LINE_FIRST && index <= P_LINE_LAST )
 	{
 		const int i     = (int)( index - P_LINE_FIRST );
@@ -598,6 +639,12 @@ char* TextSource::GetTextParameter( unsigned int index )
 		out = extraLines[ index - P_LINE_FIRST ];
 		return const_cast< char* >( out.c_str() );
 	}
+	for( int l = 0; l < kNumLineStyles; ++l )
+		if( index == lineParam( l, LP_FONT ) )
+		{
+			out = lineFonts[ l ].text;
+			return const_cast< char* >( out.c_str() );
+		}
 	switch( index )
 	{
 	case P_TEXT:
@@ -675,6 +722,19 @@ char* TextSource::GetParameterDisplay( unsigned int index )
 		break;
 	case P_SLIDE:
 		std::snprintf( buf, sizeof( buf ), "%d / %d", slideFromPosition( v, slideCount ) + 1, slideCount );
+		break;
+	case lineParam( 0, LP_FONT ):
+	case lineParam( 1, LP_FONT ):
+		return GetTextParameter( index );
+	case lineParam( 0, LP_SIZE ):
+	case lineParam( 1, LP_SIZE ):
+	case lineParam( 0, LP_SPACING ):
+	case lineParam( 1, LP_SPACING ):
+		std::snprintf( buf, sizeof( buf ), "%.0f %%", v );
+		break;
+	case lineParam( 0, LP_TRACKING ):
+	case lineParam( 1, LP_TRACKING ):
+		std::snprintf( buf, sizeof( buf ), "%+.0f /1000 em", v );
 		break;
 	case P_REPLAY:
 		if( v <= 0.0f )
@@ -877,6 +937,104 @@ void TextSource::resolveFont()
 		face = newFace;
 	fontDirty = false;
 	syncMenusToFont();
+	for( LineFont& lf : lineFonts )
+		lf.dirty = true;// style names are relative to the main family
+}
+
+// ---------------------------------------------------------------------------
+// Line styles. "L2 Font" holds "" (main font), a style of the main family
+// ("Bold") or a full "Family / Style". A style name follows the main family,
+// so switching the main font keeps "name bold, function regular".
+// ---------------------------------------------------------------------------
+void TextSource::setLineFontText( int l, const std::string& t, bool raiseEvent )
+{
+	if( t == lineFonts[ l ].text )
+		return;
+	lineFonts[ l ].text  = t;
+	lineFonts[ l ].dirty = true;
+	if( raiseEvent )
+		RaiseParamEvent( lineParam( l, LP_FONT ), FF_EVENT_FLAG_VALUE );
+}
+
+void TextSource::resolveLineFont( int l )
+{
+	LineFont& lf = lineFonts[ l ];
+	if( !face )
+		return;
+	FontDatabase& db       = FontDatabase::instance();
+	const FontEntry& main  = face->entry();
+	const std::string q    = trimCopy( lf.text );
+	const bool fromFile    = !fontFile.empty();
+	std::optional< FontEntry > entry;
+	std::vector< FontEntry > fileFaces;
+	if( fromFile )
+		fileFaces = FontDatabase::scanFile( fontFile );
+
+	if( q.empty() )
+		entry = main;
+	else if( q.find( '/' ) == std::string::npos && fromFile )
+	{
+		for( const FontEntry& f : fileFaces )
+			if( normalizeFontName( f.style ) == normalizeFontName( q ) )
+				entry = f;
+	}
+	if( !entry )
+	{
+		if( !db.isReady() )
+			return;// try again next frame
+		const std::string query = q.find( '/' ) == std::string::npos ? main.family + " / " + q : q;
+		bool matched            = false;
+		auto found              = db.resolve( query, &matched );
+		if( found && matched )
+			entry = *found;
+		else
+		{
+			entry = main;
+			FFGLLog::LogToHost( ( "Text+: line font '" + q + "' not found, using the main font" ).c_str() );
+		}
+	}
+	lf.dirty = false;
+	lf.face  = entry->sameFace( main ) ? nullptr : FontFace::get( *entry );
+
+	// "Weight" lists the styles of the line's family.
+	if( !menusPopulated )
+		return;
+	const bool sameFile        = fromFile && entry->path == main.path;
+	const std::string menuKey  = ( sameFile ? "file:" + fontFile + ":" : "db:" ) + entry->family;
+	if( menuKey != lf.weightMenuKey )
+	{
+		lf.weightMenu = sameFile ? fileFaces : db.stylesOf( entry->family );
+		std::vector< std::string > names;
+		std::vector< float > vals;
+		for( size_t i = 0; i < lf.weightMenu.size(); ++i )
+		{
+			names.push_back( lf.weightMenu[ i ].style );
+			vals.push_back( (float)i );
+		}
+		if( names.empty() )
+		{
+			names.push_back( entry->style );
+			vals.push_back( 0.0f );
+		}
+		SetParamElements( lineParam( l, LP_WEIGHT ), names, vals, true );
+		lf.weightMenuKey = menuKey;
+	}
+	for( size_t i = 0; i < lf.weightMenu.size(); ++i )
+		if( lf.weightMenu[ i ].sameFace( *entry ) )
+		{
+			setValue( lineParam( l, LP_WEIGHT ), (float)i );
+			break;
+		}
+}
+
+void TextSource::onWeightPicked( int l, int index )
+{
+	LineFont& lf = lineFonts[ l ];
+	if( index < 0 || index >= (int)lf.weightMenu.size() || !face )
+		return;
+	const FontEntry& e = lf.weightMenu[ index ];
+	// Same family as the main font: store only the style, so it follows the main family.
+	setLineFontText( l, e.family == face->entry().family ? e.style : e.displayName(), true );
 }
 
 // ===========================================================================
@@ -1038,12 +1196,22 @@ LayoutParams TextSource::currentLayoutParams( const std::string& t ) const
 	p.sizePx           = values[ P_SIZE ];
 	p.trackingPermille = values[ P_TRACKING ];
 	p.leadingPercent   = values[ P_LEADING ];
-	p.boxWidth         = values[ P_BOX_WIDTH ];
-	p.boxHeight        = values[ P_BOX_WIDTH ] > 0 ? values[ P_BOX_HEIGHT ] : 0.0f;
+	const bool box     = (int)values[ P_WRAP ] == 1;
+	p.boxWidth         = box ? std::max( 1.0f, values[ P_BOX_WIDTH ] ) : 0.0f;
+	p.boxHeight        = box ? values[ P_BOX_HEIGHT ] : 0.0f;
 	p.align            = (Align)std::clamp( (int)values[ P_ALIGN ], 0, 3 );
 	p.anchorH          = (AnchorH)std::clamp( (int)values[ P_ANCHOR_H ], 0, 3 );
 	p.anchorV          = (AnchorV)std::clamp( (int)values[ P_ANCHOR_V ], 0, 4 );
-	p.fit              = values[ P_BOX_WIDTH ] > 0 ? (FitMode)std::clamp( (int)values[ P_FIT ], 0, 2 ) : FitMode::Off;
+	p.fit              = box ? (FitMode)std::clamp( (int)values[ P_FIT ], 0, 2 ) : FitMode::Off;
+	for( int l = 0; l < kNumLineStyles; ++l )
+	{
+		LineStyle& ls       = p.lines[ l + 1 ];
+		ls.own              = (int)values[ lineParam( l, LP_MODE ) ] == 1;
+		ls.face             = lineFonts[ l ].face.get();
+		ls.sizePercent      = values[ lineParam( l, LP_SIZE ) ];
+		ls.trackingPermille = values[ lineParam( l, LP_TRACKING ) ];
+		ls.spacingPercent   = values[ lineParam( l, LP_SPACING ) ];
+	}
 	p.kerning          = values[ P_KERNING ] > 0.5f;
 	p.ligatures        = values[ P_LIGATURES ] > 0.5f;
 	// With slides the pipe already separated the slides; inside a block it still breaks lines.
@@ -1111,6 +1279,9 @@ FFResult TextSource::ProcessOpenGL( ProcessOpenGLStruct* pGL )
 	}
 	if( fontDirty )
 		resolveFont();
+	for( int l = 0; l < kNumLineStyles; ++l )
+		if( lineFonts[ l ].dirty )
+			resolveLineFont( l );
 
 	instances.clear();
 	BlockTransform transform;
@@ -1140,8 +1311,25 @@ FFResult TextSource::ProcessOpenGL( ProcessOpenGLStruct* pGL )
 			layoutValid      = true;
 		}
 
-		// Per-glyph state: inline colours, character gradient, then the animators.
-		initGlyphStates( layout, glyphStates );
+		// Per-glyph state: line colours, inline colours (win), character gradient, animators.
+		glyphStates.assign( layout.glyphs.size(), GlyphState{} );
+		Rgb lineColor[ kLineStyles ];
+		float lineColorAmount[ kLineStyles ] = { 0, 0, 0 };
+		for( int l = 0; l < kNumLineStyles; ++l )
+		{
+			const unsigned h = lineParam( l, LP_COLOR_H );
+			const Color c    = hsbaToColor( values[ h ], values[ h + 1 ], values[ h + 2 ], 1.0f );
+			lineColor[ l + 1 ]       = Rgb{ c.r, c.g, c.b };
+			lineColorAmount[ l + 1 ] = values[ h + 3 ];
+		}
+		for( size_t i = 0; i < layout.glyphs.size(); ++i )
+		{
+			const LaidGlyph& g = layout.glyphs[ i ];
+			if( g.style > 0 && lineColorAmount[ g.style ] > 0.0f )
+				layerTint( glyphStates[ i ], lineColor[ g.style ], lineColorAmount[ g.style ] );
+			if( g.colorIndex >= 0 && g.colorIndex < (int)layout.palette.size() )
+				layerTint( glyphStates[ i ], layout.palette[ g.colorIndex ], 1.0f );
+		}
 		const float lastIdx = (float)std::max( 1, layout.numChars - 1 );
 		if( style.fillMode == FillMode::GradientChars )
 			for( size_t i = 0; i < glyphStates.size(); ++i )
@@ -1161,11 +1349,22 @@ FFResult TextSource::ProcessOpenGL( ProcessOpenGLStruct* pGL )
 		}
 
 		const float size    = layout.sizePx;
-		const int level     = spreadLevelFor( style.reach() / std::max( 1.0f, size ) );
-		int minLevelUsed    = level;
+		// Faces and distance-field levels per line style: smaller lines need a wider
+		// spread (in em) for the same effect width in pixels.
+		std::shared_ptr< FontFace > styleFace[ kLineStyles ] = { face, face, face };
+		int styleLevel[ kLineStyles ];
+		for( int st = 0; st < kLineStyles; ++st )
+		{
+			if( st > 0 && lineFonts[ st - 1 ].face )
+				styleFace[ st ] = lineFonts[ st - 1 ].face;
+			const float scale = st == 0 ? 1.0f : std::max( 0.05f, values[ lineParam( st - 1, LP_SIZE ) ] / 100.0f );
+			styleLevel[ st ]  = spreadLevelFor( style.reach() / std::max( 1.0f, size * scale ) );
+		}
+		int minLevelUsed    = kNumSpreadLevels - 1;
 		bool atlasFull      = false;
 		GlyphCache& cache   = GlyphCache::instance();
 		float minGlyphScale = 1.0f;
+		float minReachPx    = 1.0e9f;
 
 		instances.reserve( layout.glyphs.size() );
 		for( size_t i = 0; i < layout.glyphs.size(); ++i )
@@ -1174,27 +1373,33 @@ FFResult TextSource::ProcessOpenGL( ProcessOpenGLStruct* pGL )
 			const GlyphState& st = glyphStates[ i ];
 			if( st.alpha <= 0.001f || st.scale <= 0.001f )
 				continue;
+			const int gs                          = std::clamp( g.style, 0, kLineStyles - 1 );
+			const std::shared_ptr< FontFace >& gf = styleFace[ gs ];
+			const int level                       = styleLevel[ gs ];
+			const float glyphScale                = st.scale * g.scale;
 
-			const AtlasSlot* slot = atlas.find( atlasKey( face->id(), g.glyphId, level ) );
+			const AtlasSlot* slot = atlas.find( atlasKey( gf->id(), g.glyphId, level ) );
 			if( !slot )
 			{
-				if( auto bmp = cache.get( face, g.glyphId, level ) )
+				if( auto bmp = cache.get( gf, g.glyphId, level ) )
 				{
 					if( bmp->empty )
 						continue;
-					slot = atlas.add( atlasKey( face->id(), g.glyphId, level ), *bmp );
+					slot = atlas.add( atlasKey( gf->id(), g.glyphId, level ), *bmp );
 					if( !slot )
 						atlasFull = true;
 				}
 			}
 			// While the wanted spread level is being generated, use any level we already have.
 			for( int l = kNumSpreadLevels - 1; !slot && l >= 0; --l )
-				slot = atlas.find( atlasKey( face->id(), g.glyphId, l ) );
+				slot = atlas.find( atlasKey( gf->id(), g.glyphId, l ) );
 			if( !slot )
 				continue;
 
+			// The field of this glyph reaches spreadEm * its size in px.
+			minReachPx           = std::min( minReachPx, spreadLevel( slot->level ).spreadEm * size * std::max( 0.05f, glyphScale ) );
 			minLevelUsed         = std::min( minLevelUsed, slot->level );
-			minGlyphScale        = std::min( minGlyphScale, st.scale );
+			minGlyphScale        = std::min( minGlyphScale, glyphScale );
 			const SpreadLevel& L = spreadLevel( slot->level );
 			GlyphInstance inst;
 			inst.planeL        = slot->planeLeft;
@@ -1207,11 +1412,11 @@ FFResult TextSource::ProcessOpenGL( ProcessOpenGLStruct* pGL )
 			inst.v1            = slot->v1;
 			inst.x             = g.x + st.dx;
 			inst.y             = g.y + st.dy;
-			inst.scale         = st.scale;
+			inst.scale         = glyphScale;
 			inst.rotation      = st.rotation;
 			inst.alpha         = st.alpha;
 			inst.index         = g.charIndex / lastIdx;
-			inst.pxPerAtlasPx  = size * st.scale / L.emPx;
+			inst.pxPerAtlasPx  = size * glyphScale / L.emPx;
 			inst.spreadAtlasPx = (float)L.spreadPx;
 			inst.tintR         = st.tint.r;
 			inst.tintG         = st.tint.g;
@@ -1222,22 +1427,29 @@ FFResult TextSource::ProcessOpenGL( ProcessOpenGLStruct* pGL )
 
 		// Queue the rest of Latin-1 behind the visible glyphs, so typing new text
 		// rarely has to wait for glyph generation.
-		const uint64_t warmKey = ( (uint64_t)face->id() << 8 ) | (uint64_t)level;
-		if( warmKey != prewarmedKey )
+		for( int st = 0; st < kLineStyles; ++st )
 		{
-			prewarmedKey = warmKey;
+			const std::shared_ptr< FontFace >& wf = styleFace[ st ];
+			const uint64_t warmKey                = ( (uint64_t)wf->id() << 8 ) | (uint64_t)styleLevel[ st ];
+			if( std::find( prewarmed.begin(), prewarmed.end(), warmKey ) != prewarmed.end() )
+				continue;
+			prewarmed.push_back( warmKey );
+			if( prewarmed.size() > 16 )
+				prewarmed.erase( prewarmed.begin() );
 			for( hb_codepoint_t cp = 0x21; cp <= 0xFF; ++cp )
 			{
 				hb_codepoint_t gid = 0;
-				if( ( cp < 0x7F || cp > 0xA0 ) && hb_font_get_nominal_glyph( face->hbFont(), cp, &gid ) )
-					cache.get( face, gid, level, false );
+				if( ( cp < 0x7F || cp > 0xA0 ) && hb_font_get_nominal_glyph( wf->hbFont(), cp, &gid ) )
+					cache.get( wf, gid, styleLevel[ st ], false );
 			}
 		}
 		if( atlasFull )
 			atlas.clear();// rebuilt from the CPU cache over the next frames
 
 		// The field reaches spreadEm * glyph size; effects beyond that are clamped.
-		style.clampTo( spreadLevel( minLevelUsed ).spreadEm * size * std::max( 0.05f, minGlyphScale ) );
+		if( minReachPx < 1.0e8f )
+			style.clampTo( minReachPx );
+		(void)minLevelUsed;
 		(void)maxScale;
 		transform.sizePx    = size;
 		transform.boxLeft   = layout.left;

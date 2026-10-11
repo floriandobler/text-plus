@@ -173,10 +173,14 @@ int main( int argc, char** argv )
 	auto tInst        = std::chrono::steady_clock::now();
 	FFInstanceID inst = (FFInstanceID)call( FF_INSTANTIATE_GL, ptr( &vp ) ).PointerValue;
 	const double instantiateMs = std::chrono::duration< double, std::milli >( std::chrono::steady_clock::now() - tInst ).count();
+	// "@instances=N": N-1 more instances with different text, rendered (into a
+	// scratch framebuffer) before the main instance every frame. They share the
+	// GL programs and scratch targets, so the main output must not change.
+	std::vector< FFInstanceID > others;
 	for( int k = 0; k < extraInstances; ++k )
 	{
 		auto t = std::chrono::steady_clock::now();
-		call( FF_INSTANTIATE_GL, ptr( &vp ) );
+		others.push_back( (FFInstanceID)call( FF_INSTANTIATE_GL, ptr( &vp ) ).PointerValue );
 		std::printf( "  extra instance %d: %.2f ms\n", k + 1, std::chrono::duration< double, std::milli >( std::chrono::steady_clock::now() - t ).count() );
 	}
 	if( !inst || inst == (FFInstanceID)(uintptr_t)FF_FAIL )
@@ -185,6 +189,14 @@ int main( int argc, char** argv )
 		return 1;
 	}
 
+	// "Name=value": the first '=' after which the name is a known parameter
+	// (names like "| = New Line" contain '=' themselves).
+	auto splitArg = [ & ]( const std::string& a ) -> size_t {
+		for( size_t eq = a.find( '=' ); eq != std::string::npos; eq = a.find( '=', eq + 1 ) )
+			if( byName.count( a.substr( 0, eq ) ) )
+				return eq;
+		return a.find( '=' );
+	};
 	std::vector< std::string > keep;// text params must outlive the call
 	keep.reserve( 256 );
 	std::vector< std::string > deferred;// "+Param=value": applied after the first frames (user interaction)
@@ -216,7 +228,7 @@ int main( int argc, char** argv )
 	{
 		std::string arg = argv[ a ];
 		// A parameter whose own name starts with '+' ("+ Line") is set directly.
-		const bool literalPlus = !arg.empty() && arg[ 0 ] == '+' && byName.count( arg.substr( 0, arg.find( '=' ) ) );
+		const bool literalPlus = !arg.empty() && arg[ 0 ] == '+' && byName.count( arg.substr( 0, splitArg( arg ) ) );
 		if( !literalPlus && arg.size() > 1 && arg[ 0 ] == '+' && arg[ 1 ] == '+' )
 		{
 			deferred2.push_back( arg.substr( 2 ) );
@@ -227,7 +239,7 @@ int main( int argc, char** argv )
 			deferred.push_back( arg.substr( 1 ) );
 			continue;
 		}
-		size_t eq       = arg.find( '=' );
+		size_t eq       = arg[ 0 ] == '@' ? arg.find( '=' ) : splitArg( arg );
 		if( eq == std::string::npos )
 			continue;
 		std::string key = arg.substr( 0, eq ), val = arg.substr( eq + 1 );
@@ -383,6 +395,36 @@ int main( int argc, char** argv )
 		glClearColor( 0, 0, 0, 0 );
 		glClear( GL_COLOR_BUFFER_BIT );
 		GLSnapshot before = GLSnapshot::take();
+		for( size_t k = 0; k < others.size(); ++k )
+		{
+			static std::string otherText;
+			otherText = "Other " + std::to_string( k ) + " WWWWWW|second line";
+			SetParameterStruct sp{};
+			sp.ParameterNumber = byName[ "Text" ];
+			sp.NewParameterValue.PointerValue = (void*)otherText.c_str();
+			call( FF_SET_PARAMETER, ptr( &sp ), others[ k ] );
+			float glow = 40.0f;
+			sp.ParameterNumber = byName[ "Glow Radius" ];
+			std::memcpy( &sp.NewParameterValue.UIntValue, &glow, 4 );
+			call( FF_SET_PARAMETER, ptr( &sp ), others[ k ] );
+			static GLuint scratchTex = 0, scratchFbo = 0;
+			if( !scratchFbo )
+			{
+				glGenTextures( 1, &scratchTex );
+				glBindTexture( GL_TEXTURE_2D, scratchTex );
+				glTexImage2D( GL_TEXTURE_2D, 0, GL_RGBA8, W, H, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr );
+				glBindTexture( GL_TEXTURE_2D, 0 );
+				glGenFramebuffers( 1, &scratchFbo );
+				glBindFramebuffer( GL_FRAMEBUFFER, scratchFbo );
+				glFramebufferTexture2D( GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, scratchTex, 0 );
+				glBindFramebuffer( GL_FRAMEBUFFER, fbo );
+			}
+			call( FF_SET_TIME, ptr( &t ), others[ k ] );
+			ProcessOpenGLStruct opgl{ 0, nullptr, scratchFbo };
+			glBindFramebuffer( GL_FRAMEBUFFER, scratchFbo );
+			call( FF_PROCESS_OPENGL, ptr( &opgl ), others[ k ] );
+			glBindFramebuffer( GL_FRAMEBUFFER, fbo );
+		}
 		ProcessOpenGLStruct pgl{ 0, nullptr, fbo };
 		auto t0 = std::chrono::steady_clock::now();
 		call( FF_PROCESS_OPENGL, ptr( &pgl ), inst );
@@ -400,14 +442,14 @@ int main( int argc, char** argv )
 		if( f == deferAt && !deferred.empty() )
 		{
 			for( const std::string& d : deferred )
-				setParam( d.substr( 0, d.find( '=' ) ), d.substr( d.find( '=' ) + 1 ) );
+				setParam( d.substr( 0, splitArg( d ) ), d.substr( splitArg( d ) + 1 ) );
 			deferred.clear();
 			stable = 0;
 		}
 		if( f == deferAt + 1 && !deferred2.empty() )
 		{
 			for( const std::string& d : deferred2 )
-				setParam( d.substr( 0, d.find( '=' ) ), d.substr( d.find( '=' ) + 1 ) );
+				setParam( d.substr( 0, splitArg( d ) ), d.substr( splitArg( d ) + 1 ) );
 			deferred2.clear();
 			stable = 0;
 		}
@@ -521,6 +563,8 @@ int main( int argc, char** argv )
 		}
 	}
 
+	for( FFInstanceID o : others )
+		call( FF_DEINSTANTIATE_GL, u( 0 ), o );
 	call( FF_DEINSTANTIATE_GL, u( 0 ), inst );
 	call( FF_DEINITIALISE, u( 0 ) );
 	std::printf( "%s  instantiate %.1f ms, first frame %.1f ms, last frame %.1f ms  state-leaks %d  premul-violations %d\n", outPath, instantiateMs,

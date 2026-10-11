@@ -38,9 +38,16 @@ grep -q "(2 / 2)" out/csv.txt || { echo "FEHLER: CSV-Slides"; exit 1; }
 # Wave: Progress is the phase
 $H $P out/wave_phase.png 960 240 "Text=Wave Phase" "Font=Inter / Black" "Size=110" "+A1 Preset=9" "++A1 Progress=0.25"
 # Extra line fields ("Line 2", "Line 3") add lines below "Text"
-$H $P out/line_fields.png 960 400 "Text=Erste Zeile" "Line 2=Zweite Zeile" "Line 3=Dritte" "Size=90"
+$H $P out/line_fields.png 960 400 "Text=Erste Zeile" "Text 2=Zweite Zeile" "Text 3=Dritte" "Size=90"
 # Resolume's +/- buttons step the Slide slider by 0.01: an isolated step = next / previous slide
 $H $P out/slide_stepper.png 640 200 "Text=A|B|C|D" "Slides=1" "Slide=0.875" "+Slide=0.885" @deferAt=90 @frames=100 @dt=0.016 @print=Slide | tee out/slide_stepper.txt
 grep -q "(1 / 4)" out/slide_stepper.txt || { echo "FEHLER: Slide-Stepper"; exit 1; }
+# Line styles: name / function / company
+$H $P out/lower_third.png 1280 400 "Text=Anna Musterfrau" "Text 2=REGIE & LICHTDESIGN" "Text 3=Staatstheater Beispielstadt" "Font=Inter / Black" "Size=110" "Align=0" "Anchor H=2" "L2 Style=1" "L2 Font=Medium" "L2 Size=45" "L2 Color=0.1" "L2 Color_Sat=0.8" "L2 Color_Alpha=1" "L2 Tracking=120" "L2 Spacing=8" "L3 Style=1" "L3 Font=Light Italic" "L3 Size=38" "Outline Width=6" "Outline Color_Bri=0.1" "@print=L2 Font,L3 Font" | tee out/lower_third.txt
+grep -q "(Medium)" out/lower_third.txt && grep -q "(Light Italic)" out/lower_third.txt || { echo "FEHLER: Zeilen-Stile"; exit 1; }
+# Wrap in a box, justified
+$H $P out/wrap_box.png 1280 720 "Text=Distance fields keep every outline outside the letters, at any size, with shadows and glow computed in one pass." "Font=Inter / Regular" "Size=64" "Wrap=1" "Box Width=900" "Align=3"
 $H $P out/menus.png 320 180 "Font=Inter / Regular" "+Style=3" @frames=16
+# Robustness: random parameter combinations (no crash, GL error or state leak)
+python3 tests/fuzz_params.py $H $P 20
 echo "Bilder in out/"

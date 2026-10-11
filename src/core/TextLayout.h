@@ -50,6 +50,27 @@ enum class FitMode
 	FitWidth
 };
 
+// Style of a line position. Index 0 is the main style (line 1); index 1 is
+// "Line 2", index 2 "Line 3+" (every line from the third on). A style that is
+// not `own` repeats the previous one, so by default all lines look alike.
+// A "line" is a line of the source text (a newline, "|" or CSV cell), not a
+// line created by wrapping: wrapped parts keep the style of their line.
+struct LineStyle
+{
+	bool own                = false;
+	const FontFace* face    = nullptr;// nullptr = the main face
+	float sizePercent       = 100.0f; // of the main size
+	float trackingPermille  = 0.0f;   // added to the main tracking
+	float spacingPercent    = 0.0f;   // extra space above the line, % of the main size
+
+	bool operator==( const LineStyle& o ) const
+	{
+		return own == o.own && face == o.face && sizePercent == o.sizePercent && trackingPermille == o.trackingPermille &&
+			spacingPercent == o.spacingPercent;
+	}
+};
+constexpr int kLineStyles = 3;
+
 struct LayoutParams
 {
 	std::string text;
@@ -66,9 +87,13 @@ struct LayoutParams
 	bool ligatures         = true;
 	bool pipeIsNewline     = true;
 	bool markup            = true;// inline colours {#ff8800}...{/}
+	LineStyle lines[ kLineStyles ];// [0] is ignored: line 1 always uses the main style
 
 	bool operator==( const LayoutParams& o ) const
 	{
+		for( int i = 1; i < kLineStyles; ++i )
+			if( !( lines[ i ] == o.lines[ i ] ) )
+				return false;
 		return text == o.text && sizePx == o.sizePx && trackingPermille == o.trackingPermille && leadingPercent == o.leadingPercent &&
 			boxWidth == o.boxWidth && boxHeight == o.boxHeight && align == o.align && anchorH == o.anchorH && anchorV == o.anchorV &&
 			fit == o.fit && kerning == o.kerning && ligatures == o.ligatures && pipeIsNewline == o.pipeIsNewline && markup == o.markup;
@@ -85,6 +110,8 @@ struct LaidGlyph
 	int lineIndex = 0;
 	bool visible  = true;// false for spaces and other blank glyphs
 	int colorIndex = -1; // inline colour (index into LayoutResult::palette), -1 = none
+	int style      = 0;  // effective line style (0 main, 1 "Line 2", 2 "Line 3+")
+	float scale    = 1.0f;// glyph size relative to LayoutResult::sizePx
 };
 
 struct LayoutResult
@@ -99,6 +126,9 @@ struct LayoutResult
 	// Metric box of the whole block relative to the anchor (px, y down)
 	float left = 0, top = 0, right = 0, bottom = 0;
 };
+
+// Effective style of source line `index` (0-based) for the given styles.
+int lineStyleOf( int index, const LineStyle* styles );
 
 LayoutResult layoutText( const FontFace& face, const LayoutParams& params );
 

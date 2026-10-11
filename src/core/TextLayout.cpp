@@ -22,12 +22,22 @@ struct ShapedGlyph
 	int colorIndex = -1;
 };
 
-using ShapedPara = std::vector< ShapedGlyph >;
+struct ShapedPara
+{
+	std::vector< ShapedGlyph > glyphs;
+	int style          = 0;
+	const FontFace* face = nullptr;
+	float scale        = 1.0f;// size relative to the main size
+	float trackingEm   = 0.0f;// tracking in em of the MAIN size
+	float spacingEm    = 0.0f;// extra space above, em of the main size
 
-std::vector< ShapedPara > shape( const FontFace& face, const LayoutParams& p, std::vector< Rgb >& palette )
+	size_t size() const { return glyphs.size(); }
+	const ShapedGlyph& operator[]( size_t i ) const { return glyphs[ i ]; }
+};
+
+std::vector< ShapedPara > shape( const FontFace& mainFace, const LayoutParams& p, std::vector< Rgb >& palette )
 {
 	std::vector< ShapedPara > result;
-	const float upem = (float)face.unitsPerEm();
 
 	std::vector< hb_feature_t > features;
 	auto addFeature = [ & ]( const char* str ) {
@@ -45,10 +55,20 @@ std::vector< ShapedPara > shape( const FontFace& face, const LayoutParams& p, st
 	}
 
 	hb_buffer_t* buf = hb_buffer_create();
+	int paraIndex    = 0;
 	for( const MarkedParagraph& marked : parseMarkedText( p.text, p.pipeIsNewline, p.markup, palette ) )
 	{
 		const std::string& para = marked.text;
 		ShapedPara out;
+		out.style            = lineStyleOf( paraIndex++, p.lines );
+		const LineStyle& ls  = p.lines[ out.style ];
+		const bool styled    = out.style > 0;
+		const FontFace& face = styled && ls.face ? *ls.face : mainFace;
+		out.face             = &face;
+		out.scale            = styled ? std::max( 0.01f, ls.sizePercent / 100.0f ) : 1.0f;
+		out.trackingEm       = ( p.trackingPermille + ( styled ? ls.trackingPermille : 0.0f ) ) / 1000.0f * out.scale;
+		out.spacingEm        = styled ? ls.spacingPercent / 100.0f : 0.0f;
+		const float upem     = (float)face.unitsPerEm();
 		if( !para.empty() )
 		{
 			hb_buffer_clear_contents( buf );
@@ -59,7 +79,7 @@ std::vector< ShapedPara > shape( const FontFace& face, const LayoutParams& p, st
 			unsigned n                = 0;
 			hb_glyph_info_t* info     = hb_buffer_get_glyph_infos( buf, &n );
 			hb_glyph_position_t* pos  = hb_buffer_get_glyph_positions( buf, &n );
-			out.reserve( n );
+			out.glyphs.reserve( n );
 			for( unsigned i = 0; i < n; ++i )
 			{
 				ShapedGlyph g;
@@ -72,7 +92,7 @@ std::vector< ShapedPara > shape( const FontFace& face, const LayoutParams& p, st
 				g.breakAfter = isBreakingSpace( cp ) || cp == '-' || cp == 0x2010 || cp == 0x2013 || cp == 0x2014 || cp == 0x200B;
 				if( info[ i ].cluster < marked.colorOfByte.size() )
 					g.colorIndex = marked.colorOfByte[ info[ i ].cluster ];
-				out.push_back( g );
+				out.glyphs.push_back( g );
 			}
 		}
 		result.push_back( std::move( out ) );
@@ -97,15 +117,17 @@ struct Pass
 	float maxWidth = 0;
 };
 
-Pass breakLines( const std::vector< ShapedPara >& paras, float size, float tracking, float boxWidth )
+Pass breakLines( const std::vector< ShapedPara >& paras, float mainSize, float boxWidth )
 {
 	Pass pass;
 	const float eps = 0.01f;
 	for( int pi = 0; pi < (int)paras.size(); ++pi )
 	{
-		const ShapedPara& g = paras[ pi ];
-		const int n         = (int)g.size();
-		auto adv            = [ & ]( int i ) { return g[ i ].advEm * size + tracking; };
+		const ShapedPara& g  = paras[ pi ];
+		const int n          = (int)g.size();
+		const float size     = mainSize * g.scale;
+		const float tracking = mainSize * g.trackingEm;
+		auto adv             = [ & ]( int i ) { return g[ i ].advEm * size + tracking; };
 
 		int lineStart     = 0;
 		float lineAll     = 0;// sum of advances on the current line, spaces included
@@ -182,21 +204,34 @@ Pass breakLines( const std::vector< ShapedPara >& paras, float size, float track
 	return pass;
 }
 
-LayoutResult place( const FontFace& face, const LayoutParams& p, const std::vector< ShapedPara >& paras, float size, bool allowWrap )
+LayoutResult place( const LayoutParams& p, const std::vector< ShapedPara >& paras, float size, bool allowWrap )
 {
 	LayoutResult r;
-	r.sizePx             = size;
-	const float tracking = p.trackingPermille * size / 1000.0f;
-	const float boxW     = allowWrap ? p.boxWidth : 0.0f;
-	Pass pass            = breakLines( paras, size, tracking, boxW );
-	r.overflow           = pass.overflow;
-	r.numLines           = (int)pass.lines.size();
+	r.sizePx         = size;
+	const float boxW = allowWrap ? p.boxWidth : 0.0f;
+	Pass pass        = breakLines( paras, size, boxW );
+	r.overflow       = pass.overflow;
+	r.numLines       = (int)pass.lines.size();
+	if( pass.lines.empty() )
+		return r;
 
-	const FontMetrics& m = face.metrics();
-	const float lineAdv  = size * p.leadingPercent / 100.0f;
-	const float blockW   = p.boxWidth > 0 ? p.boxWidth : pass.maxWidth;
-	const float top      = -m.ascender * size;
-	const float bottom   = ( r.numLines - 1 ) * lineAdv - m.descender * size;
+	// Baselines: every line advances by the leading of its own size. Where the
+	// style changes (line 1 -> "Line 2", "Line 2" -> "Line 3+") the new style's
+	// spacing is added once.
+	std::vector< float > baseline( pass.lines.size(), 0.0f );
+	for( size_t li = 1; li < pass.lines.size(); ++li )
+	{
+		const ShapedPara& para = paras[ pass.lines[ li ].para ];
+		const ShapedPara& prev = paras[ pass.lines[ li - 1 ].para ];
+		const bool styleStarts = pass.lines[ li ].para != pass.lines[ li - 1 ].para && para.style != prev.style;
+		baseline[ li ]         = baseline[ li - 1 ] + size * para.scale * p.leadingPercent / 100.0f + ( styleStarts ? para.spacingEm * size : 0.0f );
+	}
+	const ShapedPara& firstPara = paras[ pass.lines.front().para ];
+	const ShapedPara& lastPara  = paras[ pass.lines.back().para ];
+	const float blockW          = p.boxWidth > 0 ? p.boxWidth : pass.maxWidth;
+	const float top             = -firstPara.face->metrics().ascender * size * firstPara.scale;
+	const float lastBaseline    = baseline.back();
+	const float bottom          = lastBaseline - lastPara.face->metrics().descender * size * lastPara.scale;
 	if( p.boxHeight > 0 && bottom - top > p.boxHeight + 0.01f )
 		r.overflow = true;
 
@@ -204,8 +239,10 @@ LayoutResult place( const FontFace& face, const LayoutParams& p, const std::vect
 	bool prevSpace = true;
 	for( int li = 0; li < (int)pass.lines.size(); ++li )
 	{
-		const Line& line    = pass.lines[ li ];
-		const ShapedPara& g = paras[ line.para ];
+		const Line& line     = pass.lines[ li ];
+		const ShapedPara& g  = paras[ line.para ];
+		const float gSize    = size * g.scale;
+		const float tracking = size * g.trackingEm;
 
 		float x          = 0;
 		float extraSpace = 0;
@@ -238,14 +275,16 @@ LayoutResult place( const FontFace& face, const LayoutParams& p, const std::vect
 		}
 		}
 
-		const float y = li * lineAdv;
+		const float y = baseline[ li ];
 		for( int k = line.begin; k < line.end; ++k )
 		{
 			const ShapedGlyph& sg = g[ k ];
 			LaidGlyph lg;
 			lg.glyphId   = sg.gid;
-			lg.x         = x + sg.xOffEm * size;
-			lg.y         = y - sg.yOffEm * size;
+			lg.x         = x + sg.xOffEm * gSize;
+			lg.y         = y - sg.yOffEm * gSize;
+			lg.style     = g.style;
+			lg.scale     = g.scale;
 			lg.lineIndex = li;
 			lg.visible   = !sg.space;
 			lg.colorIndex = sg.colorIndex;
@@ -258,7 +297,7 @@ LayoutResult place( const FontFace& face, const LayoutParams& p, const std::vect
 				r.glyphs.push_back( lg );
 			}
 			prevSpace = sg.space;
-			x += sg.advEm * size + tracking + ( sg.space ? extraSpace : 0.0f );
+			x += sg.advEm * gSize + tracking + ( sg.space ? extraSpace : 0.0f );
 		}
 		prevSpace = true;// a new line always starts a new word
 	}
@@ -306,7 +345,7 @@ LayoutResult place( const FontFace& face, const LayoutParams& p, const std::vect
 		ay = 0;
 		break;
 	case AnchorV::LastBaseline:
-		ay = ( r.numLines - 1 ) * lineAdv;
+		ay = lastBaseline;
 		break;
 	}
 	for( LaidGlyph& lg : r.glyphs )
@@ -321,39 +360,38 @@ LayoutResult place( const FontFace& face, const LayoutParams& p, const std::vect
 	return r;
 }
 
-LayoutResult layoutShaped( const FontFace& face, const LayoutParams& p, const std::vector< ShapedPara >& paras )
+LayoutResult layoutShaped( const LayoutParams& p, const std::vector< ShapedPara >& paras )
 {
 	float size                      = std::max( 0.5f, p.sizePx );
 
 	switch( p.fit )
 	{
 	case FitMode::Off:
-		return place( face, p, paras, size, true );
+		return place( p, paras, size, true );
 
 	case FitMode::FitWidth: {
 		if( p.boxWidth <= 0 )
-			return place( face, p, paras, size, true );
+			return place( p, paras, size, true );
 		// Advances and tracking both scale linearly with the size, so one
 		// measurement gives the exact size at which the widest line fills the box.
-		const float tracking = p.trackingPermille * size / 1000.0f;
-		const float widest   = breakLines( paras, size, tracking, 0 ).maxWidth;
+		const float widest = breakLines( paras, size, 0 ).maxWidth;
 		if( widest <= 0 )
-			return place( face, p, paras, size, false );
-		return place( face, p, paras, size * p.boxWidth / widest, false );
+			return place( p, paras, size, false );
+		return place( p, paras, size * p.boxWidth / widest, false );
 	}
 
 	case FitMode::ShrinkToBox: {
 		if( p.boxWidth <= 0 && p.boxHeight <= 0 )
-			return place( face, p, paras, size, true );
-		LayoutResult full = place( face, p, paras, size, true );
+			return place( p, paras, size, true );
+		LayoutResult full = place( p, paras, size, true );
 		if( !full.overflow )
 			return full;
 		float lo = size * 0.02f, hi = size;
-		LayoutResult best = place( face, p, paras, lo, true );
+		LayoutResult best = place( p, paras, lo, true );
 		for( int iter = 0; iter < 14; ++iter )
 		{
 			float mid         = 0.5f * ( lo + hi );
-			LayoutResult test = place( face, p, paras, mid, true );
+			LayoutResult test = place( p, paras, mid, true );
 			if( test.overflow )
 				hi = mid;
 			else
@@ -365,16 +403,25 @@ LayoutResult layoutShaped( const FontFace& face, const LayoutParams& p, const st
 		return best;
 	}
 	}
-	return place( face, p, paras, size, true );
+	return place( p, paras, size, true );
 }
 
 }//namespace
+
+int lineStyleOf( int index, const LineStyle* styles )
+{
+	if( index <= 0 )
+		return 0;
+	if( index == 1 )
+		return styles[ 1 ].own ? 1 : 0;
+	return styles[ 2 ].own ? 2 : styles[ 1 ].own ? 1 : 0;
+}
 
 LayoutResult layoutText( const FontFace& face, const LayoutParams& p )
 {
 	std::vector< Rgb > palette;
 	std::vector< ShapedPara > paras = shape( face, p, palette );
-	LayoutResult r                  = layoutShaped( face, p, paras );
+	LayoutResult r                  = layoutShaped( p, paras );
 	r.palette                       = std::move( palette );
 	return r;
 }

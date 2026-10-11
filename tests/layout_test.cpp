@@ -171,6 +171,39 @@ int main( int argc, char** argv )
 	CHECK( kOn < kOff, "kerning tightens AV (%.2f vs %.2f)", kOn, kOff );
 	std::printf( "ok   layout\n" );
 
+	// --- line styles: line 2 own (50 %, +20 % spacing), line 3+ repeats line 2 until it is own ---
+	{
+		LayoutParams q;
+		q.text           = "Aa|Bb|Cc|Dd";
+		q.sizePx         = 100;
+		q.leadingPercent = 120;
+		q.anchorV        = AnchorV::FirstBaseline;
+		q.align          = Align::Left;
+		auto plain       = layoutText( *face, q );
+		CHECK( plain.glyphs[ 2 ].style == 0 && plain.glyphs[ 2 ].scale == 1.0f, "no own styles: all lines main style" );
+		q.lines[ 1 ].own            = true;
+		q.lines[ 1 ].sizePercent    = 50;
+		q.lines[ 1 ].spacingPercent = 20;
+		auto two = layoutText( *face, q );
+		// baselines: 0, 0.5*120 + 20 = 80, +60 = 140, +60 = 200
+		CHECK( two.glyphs[ 2 ].style == 1 && std::fabs( two.glyphs[ 2 ].scale - 0.5f ) < 1e-6, "line 2 styled" );
+		CHECK( two.glyphs[ 4 ].style == 1 && two.glyphs[ 6 ].style == 1, "line 3+ repeats line 2" );
+		CHECK( std::fabs( two.glyphs[ 2 ].y - 80.0f ) < 0.01f && std::fabs( two.glyphs[ 4 ].y - 140.0f ) < 0.01f, "line 2 baseline %.2f, line 3 %.2f",
+			   two.glyphs[ 2 ].y, two.glyphs[ 4 ].y );
+		q.lines[ 2 ].own         = true;
+		q.lines[ 2 ].sizePercent = 25;
+		auto three               = layoutText( *face, q );
+		CHECK( three.glyphs[ 4 ].style == 2 && three.glyphs[ 6 ].style == 2 && std::fabs( three.glyphs[ 4 ].scale - 0.25f ) < 1e-6, "line 3+ own" );
+		CHECK( std::fabs( three.glyphs[ 4 ].y - ( 80.0f + 30.0f ) ) < 0.01f, "line 3 baseline from its own size (%.2f)", three.glyphs[ 4 ].y );
+		// widths: a 50 % line is half as wide as the same text at 100 %
+		q.text      = "Hello|Hello";
+		q.lines[ 1 ].spacingPercent = 0;
+		auto widths = layoutText( *face, q );
+		const float w1 = widths.glyphs[ 4 ].x - widths.glyphs[ 0 ].x, w2 = widths.glyphs[ 9 ].x - widths.glyphs[ 5 ].x;
+		CHECK( std::fabs( w2 - 0.5f * w1 ) < 0.05f, "line 2 advances scale with its size (%.2f vs %.2f)", w1, w2 );
+		std::printf( "ok   line styles\n" );
+	}
+
 	// --- inline colour markup ---
 	p.text   = "a{#ff0000}bc{/}d{{e";
 	auto mk  = layoutText( *face, p );
