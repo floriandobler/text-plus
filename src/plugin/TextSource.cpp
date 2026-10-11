@@ -33,7 +33,7 @@ CFFGLPluginInfo PluginInfo( PluginFactory< TextSource >,// create method
 							2,                           // plugin minor
 							FF_SOURCE,
 							"Text source with distance-field outlines, shadows, glow and per-character animation",
-							"Text+ 0.2",
+							"Text+ 0.3",
 							0, nullptr, initialiseLibrary, nullptr );
 
 const char* kGroupText     = "Text";
@@ -53,17 +53,10 @@ enum SlidesMode
 	SLIDES_LINES,
 	SLIDES_BLOCKS
 };
-enum AdvanceMode
-{
-	ADVANCE_MANUAL,
-	ADVANCE_BUTTONS,
-	ADVANCE_BEATS
-};
 enum DriveMode
 {
 	DRIVE_MANUAL,
-	DRIVE_SLIDE,
-	DRIVE_LOOP
+	DRIVE_SLIDE
 };
 
 const std::vector< const char* > kPresetNames = { "Load preset...", "Typewriter", "Fade In", "Rise In", "Drop In", "Pop In", "Spin In",
@@ -213,12 +206,27 @@ int positiveMod( int a, int n )
 }
 }//namespace
 
+// Slide position 0..1 -> slide index: n equal shares, 1.0 belongs to the last slide.
+static int slideFromPosition( float position, int count )
+{
+	if( count <= 1 )
+		return 0;
+	const float p = std::clamp( position, 0.0f, 1.0f );
+	return std::min( count - 1, (int)std::floor( p * (float)count ) );
+}
+
+// Centre of a slide's share, so rounding never lands on a neighbour.
+static float slidePosition( int index, int count )
+{
+	return count <= 1 ? 0.0f : ( (float)index + 0.5f ) / (float)count;
+}
+
 // ===========================================================================
 // Parameters
 // ===========================================================================
 TextSource::TextSource()
 {
-	createdAt = std::chrono::steady_clock::now();
+	std::fill( std::begin( hostKnown ), std::end( hostKnown ), std::nanf( "" ) );
 	SetMinInputs( 0 );
 	SetMaxInputs( 0 );
 	defineParameters();
@@ -249,14 +257,6 @@ void TextSource::defineParameters()
 		SetParamRange( id, lo, hi );
 		SetParamGroup( id, group );
 		named( id, name, display );
-	};
-	auto integer = [ & ]( unsigned id, const std::string& name, const char* group, int def, int lo, int hi ) {
-		values[ id ] = (float)def;
-		SetParamInfo( id, name.c_str(), FF_TYPE_INTEGER, (float)def );
-		if( ParamInfo* info = FindParamInfo( id ) )
-			info->defaultFloatVal = (float)def;
-		SetParamRange( id, (float)lo, (float)hi );
-		SetParamGroup( id, group );
 	};
 	auto boolean = [ & ]( unsigned id, const std::string& name, const char* group, bool def, const char* display = nullptr ) {
 		values[ id ] = def ? 1.0f : 0.0f;
@@ -299,9 +299,9 @@ void TextSource::defineParameters()
 	SetFileParamInfo( P_TEXT_FILE, "Text File", { "txt", "text", "md" }, "" );
 	SetParamGroup( P_TEXT_FILE, kGroupText );
 	option( P_SLIDES, "Slides", kGroupText, { "Off", "Each Line", "Blocks (|| or empty line)" }, SLIDES_OFF );
-	integer( P_SLIDE, "Slide", kGroupText, 1, 1, 999 );
-	option( P_ADVANCE, "Advance", kGroupText, { "Slide Parameter", "Next / Previous Buttons", "Every N Beats" }, ADVANCE_MANUAL );
-	range( P_BEATS_PER_SLIDE, "Beats per Slide", kGroupText, 4.0f, 0.25f, 64.0f );
+	// 0..1 split into equal shares: BPM sync on this slider cycles through all
+	// slides and wraps back to the first, whatever the number of slides.
+	range( P_SLIDE, "Slide", kGroupText, 0.0f, 0.0f, 1.0f );
 	event( P_NEXT_SLIDE, "Next Slide", kGroupText );
 	event( P_PREV_SLIDE, "Previous Slide", kGroupText );
 
@@ -367,7 +367,7 @@ void TextSource::defineParameters()
 		option( id( AP_MODE ), pre + "Mode", g, { "Off", "Sequence In", "Sequence Out", "Wave", "Random", "Constant" }, 0, "Mode" );
 		option( id( AP_UNIT ), pre + "Unit", g, { "Character", "Word", "Line" }, 0, "Unit" );
 		option( id( AP_ORDER ), pre + "Order", g, { "Forward", "Reverse", "From Center", "From Edges", "Random" }, 0, "Order" );
-		option( id( AP_DRIVE ), pre + "Drive", g, { "Progress Slider", "Restart on Slide Change", "Loop" }, DRIVE_MANUAL, "Drive" );
+		option( id( AP_DRIVE ), pre + "Drive", g, { "Progress Slider", "Play on Slide Change" }, DRIVE_MANUAL, "Drive" );
 		range( id( AP_PROGRESS ), pre + "Progress", g, 1.0f, 0.0f, 1.0f, "Progress" );
 		range( id( AP_DURATION ), pre + "Duration", g, 2.0f, 0.25f, 64.0f, "Duration (beats)" );
 		range( id( AP_SPREAD ), pre + "Spread", g, 3.0f, 0.0f, 50.0f, "Spread" );
@@ -383,7 +383,6 @@ void TextSource::defineParameters()
 
 	// Quality
 	range( P_EDGE, "Edge Softness", kGroupQuality, 1.0f, 0.25f, 4.0f );
-	option( P_ALPHA_OUT, "Alpha Output", kGroupQuality, { "Straight (Resolume)", "Premultiplied" }, 0 );
 
 	updateVisibility( false );
 }
@@ -409,13 +408,10 @@ void TextSource::updateVisibility( bool raiseEvent )
 	show( P_BOX_HEIGHT, box );
 	show( P_FIT, box );
 
-	const int slidesMode = (int)values[ P_SLIDES ];
-	const int advance    = (int)values[ P_ADVANCE ];
-	show( P_SLIDE, slidesMode != SLIDES_OFF );
-	show( P_ADVANCE, slidesMode != SLIDES_OFF );
-	show( P_BEATS_PER_SLIDE, slidesMode != SLIDES_OFF && advance == ADVANCE_BEATS );
-	show( P_NEXT_SLIDE, slidesMode != SLIDES_OFF && advance == ADVANCE_BUTTONS );
-	show( P_PREV_SLIDE, slidesMode != SLIDES_OFF && advance == ADVANCE_BUTTONS );
+	const bool slidesOn = (int)values[ P_SLIDES ] != SLIDES_OFF;
+	show( P_SLIDE, slidesOn );
+	show( P_NEXT_SLIDE, slidesOn );
+	show( P_PREV_SLIDE, slidesOn );
 
 	const int fillMode = (int)values[ P_FILL_MODE ];
 	show( P_FILL2_H, fillMode != 0 );
@@ -432,7 +428,7 @@ void TextSource::updateVisibility( bool raiseEvent )
 		show( animParam( a, AP_ORDER ), seq || mode == AnimMode::Wave );
 		show( animParam( a, AP_DRIVE ), on && !waveR );
 		show( animParam( a, AP_PROGRESS ), on );
-		show( animParam( a, AP_DURATION ), on && !waveR && drive != DRIVE_MANUAL );
+		show( animParam( a, AP_DURATION ), on && !waveR && drive == DRIVE_SLIDE );
 		show( animParam( a, AP_SPREAD ), seq || mode == AnimMode::Wave );
 		show( animParam( a, AP_EASE ), seq );
 		show( animParam( a, AP_SPEED ), waveR );
@@ -441,26 +437,39 @@ void TextSource::updateVisibility( bool raiseEvent )
 	}
 }
 
+bool TextSource::hostChanged( unsigned index, float value )
+{
+	const bool changed = !( value == hostKnown[ index ] );
+	hostKnown[ index ] = value;
+	return changed;
+}
+
 FFResult TextSource::SetFloatParameter( unsigned int index, float value )
 {
 	if( index >= P_COUNT )
 		return FF_FAIL;
 
+	// Choices and positions the plugin also changes itself: only a value the host
+	// did not know before is a new user action. Hosts may re-send unchanged
+	// values at any time (e.g. while animating other parameters).
+	const bool changed = hostChanged( index, value );
+
 	if( index == P_FAMILY || index == P_STYLE )
 	{
 		// Before the menus are filled the stored index means nothing (the font list
 		// may have changed since the composition was saved); "Font" decides.
-		if( !menusPopulated )
+		if( !menusPopulated || !changed )
 			return FF_SUCCESS;
-		const bool changed = (int)value != (int)values[ index ];
-		values[ index ]    = value;
-		if( changed && live )
+		values[ index ] = value;
+		if( live )
 			index == P_FAMILY ? onFamilyPicked( (int)value ) : onStylePicked( (int)value );
 		return FF_SUCCESS;
 	}
 	for( int a = 0; a < kNumAnimators; ++a )
 		if( index == animParam( a, AP_PRESET ) )
 		{
+			if( !changed )
+				return FF_SUCCESS;
 			values[ index ] = value;
 			if( live && (int)value > 0 )
 				applyPreset( a, (int)value );
@@ -473,8 +482,8 @@ FFResult TextSource::SetFloatParameter( unsigned int index, float value )
 		values[ index ] = value;
 		return FF_SUCCESS;
 	}
-	if( index == P_SLIDE && (int)value != (int)values[ P_SLIDE ] )
-		buttonOffset = 0;// the Slide parameter sets the position, buttons step from there
+	if( index == P_SLIDE && !changed )
+		return FF_SUCCESS;// keep a position set by the Next/Previous buttons
 
 	values[ index ] = value;
 	updateVisibility( true );
@@ -519,7 +528,10 @@ FFResult TextSource::SetTextParameter( unsigned int index, const char* value )
 
 float TextSource::GetFloatParameter( unsigned int index )
 {
-	return index < P_COUNT ? values[ index ] : 0.0f;
+	if( index >= P_COUNT )
+		return 0.0f;
+	hostKnown[ index ] = values[ index ];// the host now knows this value
+	return values[ index ];
 }
 
 char* TextSource::GetTextParameter( unsigned int index )
@@ -589,11 +601,8 @@ char* TextSource::GetParameterDisplay( unsigned int index )
 	case P_LEADING:
 		std::snprintf( buf, sizeof( buf ), "%.0f %%", v );
 		break;
-	case P_BEATS_PER_SLIDE:
-		std::snprintf( buf, sizeof( buf ), "%.2g beats", v );
-		break;
 	case P_SLIDE:
-		std::snprintf( buf, sizeof( buf ), "%d / %d", (int)v, slideCount );
+		std::snprintf( buf, sizeof( buf ), "%d / %d", slideFromPosition( v, slideCount ) + 1, slideCount );
 		break;
 	default:
 		if( isAnim( AP_PROGRESS ) )
@@ -620,10 +629,7 @@ FFResult TextSource::SetTime( double time )
 	// A jump back in host time means the clip was re-triggered or scrubbed back:
 	// replay the slide-driven animations from the start.
 	if( lastHostTime >= 0.0 && time + 0.05 < lastHostTime )
-	{
 		slideStartBeat = currentBeats();
-		buttonOffset   = 0;
-	}
 	lastHostTime = time;
 	return CFFGLPlugin::SetTime( time );
 }
@@ -804,7 +810,11 @@ void TextSource::pollTextFile()
 
 void TextSource::stepSlide( int delta )
 {
-	buttonOffset += delta;
+	if( (int)values[ P_SLIDES ] == SLIDES_OFF || slideCount < 1 )
+		return;
+	// Wraps around at both ends; the Slide slider shows the new position.
+	const int next = positiveMod( slideIndex + delta, slideCount );
+	setValue( P_SLIDE, slidePosition( next, slideCount ) );
 }
 
 std::string TextSource::currentText()
@@ -824,22 +834,8 @@ std::string TextSource::currentText()
 		slides           = splitSlides( source, mode, values[ P_PIPE_NEWLINE ] > 0.5f );
 		lastSlidesSource = key;
 	}
-	slideCount     = (int)slides.size();
-	const int base = (int)values[ P_SLIDE ] - 1;
-	switch( (int)values[ P_ADVANCE ] )
-	{
-	case ADVANCE_MANUAL:
-		slideIndex = positiveMod( base, slideCount );
-		break;
-	case ADVANCE_BUTTONS:
-		slideIndex = positiveMod( base + buttonOffset, slideCount );
-		break;
-	case ADVANCE_BEATS: {
-		const double per = std::max( 0.25f, values[ P_BEATS_PER_SLIDE ] );
-		slideIndex       = positiveMod( base + (int)std::floor( currentBeats() / per ), slideCount );
-		break;
-	}
-	}
+	slideCount = (int)slides.size();
+	slideIndex = slideFromPosition( values[ P_SLIDE ], slideCount );
 	return slides[ slideIndex ];
 }
 
@@ -904,10 +900,6 @@ float TextSource::animatorProgress( int a ) const
 	{
 	case DRIVE_SLIDE:
 		return (float)std::clamp( ( currentBeats() - slideStartBeat ) / dur, 0.0, 1.0 );
-	case DRIVE_LOOP: {
-		double t = currentBeats() / dur;
-		return (float)( t - std::floor( t ) );
-	}
 	default:
 		return manual;
 	}
@@ -987,20 +979,17 @@ Style TextSource::currentStyle() const
 	s.glowRadius          = values[ P_GL_RADIUS ];
 	s.glowStrength        = values[ P_GL_STRENGTH ];
 	s.edgeSoftness        = values[ P_EDGE ];
-	s.premultipliedOutput = (int)values[ P_ALPHA_OUT ] == 1;
 	return s;
 }
 
 FFResult TextSource::InitGL( const FFGLViewportStruct* vp )
 {
-	auto t0 = std::chrono::steady_clock::now();
 	CFFGLPlugin::InitGL( vp );
 	if( !renderer.init() || !atlas.init() )
 	{
 		DeInitGL();
 		return FF_FAIL;
 	}
-	initGLMs = std::chrono::duration< double, std::milli >( std::chrono::steady_clock::now() - t0 ).count();
 	return FF_SUCCESS;
 }
 
@@ -1013,7 +1002,6 @@ FFResult TextSource::DeInitGL()
 
 FFResult TextSource::ProcessOpenGL( ProcessOpenGLStruct* pGL )
 {
-	auto frameStart  = std::chrono::steady_clock::now();
 	FontDatabase& db = FontDatabase::instance();
 	db.ensureScanning();
 	if( !menusPopulated && db.isReady() )
@@ -1162,15 +1150,6 @@ FFResult TextSource::ProcessOpenGL( ProcessOpenGLStruct* pGL )
 	{
 		live = true;
 		updateVisibility( true );
-	}
-	if( !loggedStartup && face )
-	{
-		loggedStartup     = true;
-		const double life = std::chrono::duration< double, std::milli >( std::chrono::steady_clock::now() - createdAt ).count();
-		const double frame = std::chrono::duration< double, std::milli >( std::chrono::steady_clock::now() - frameStart ).count();
-		char msg[ 200 ];
-		std::snprintf( msg, sizeof( msg ), "Text+: instance ready after %.1f ms (InitGL %.1f ms, first frame %.1f ms)", life, initGLMs, frame );
-		FFGLLog::LogToHost( msg );
 	}
 	return FF_SUCCESS;
 }

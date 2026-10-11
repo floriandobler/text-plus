@@ -142,7 +142,6 @@ uniform vec4 uGlow;
 uniform float uGlowRadius;
 uniform float uGlowStrength;
 uniform float uEdge;         // anti-aliasing width in px
-uniform float uPremultiplied;
 
 out vec4 oColor;
 
@@ -223,7 +222,7 @@ void main()
 	back *= 1.0 - inside( d, outer ) * a;
 
 	vec4 result = text + back * ( 1.0 - text.a );
-	if( uPremultiplied < 0.5 && result.a > 0.0 )
+	if( result.a > 0.0 )
 		result.rgb /= result.a;// Resolume composites sources as straight alpha
 	oColor = result;
 }
@@ -770,7 +769,6 @@ void TextRenderer::render( const FFGLViewportStruct& vp, GLuint hostFbo, const s
 	glUniform1f( glGetUniformLocation( prog, "uGlowRadius" ), style.glowRadius );
 	glUniform1f( glGetUniformLocation( prog, "uGlowStrength" ), style.glowStrength );
 	glUniform1f( glGetUniformLocation( prog, "uEdge" ), std::max( 0.25f, style.edgeSoftness ) );
-	glUniform1f( glGetUniformLocation( prog, "uPremultiplied" ), style.premultipliedOutput ? 1.0f : 0.0f );
 
 	glBindVertexArray( emptyVao );
 	glDrawArrays( GL_TRIANGLES, 0, 3 );

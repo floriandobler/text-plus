@@ -12,7 +12,6 @@
 #include "render/GlyphAtlas.h"
 #include "render/TextRenderer.h"
 
-#include <chrono>
 #include <memory>
 #include <string>
 #include <vector>
@@ -53,9 +52,7 @@ enum ParamId : unsigned int
 	P_MARKUP,
 	P_TEXT_FILE,
 	P_SLIDES,
-	P_SLIDE,
-	P_ADVANCE,
-	P_BEATS_PER_SLIDE,
+	P_SLIDE,// position 0..1, split into equal shares per slide (BPM sync friendly)
 	P_NEXT_SLIDE,
 	P_PREV_SLIDE,
 	// Font
@@ -124,7 +121,6 @@ enum ParamId : unsigned int
 	P_A2 = P_A1 + AP_COUNT,
 	// Quality
 	P_EDGE = P_A2 + AP_COUNT,
-	P_ALPHA_OUT,
 
 	P_COUNT
 };
@@ -178,6 +174,11 @@ private:
 	double currentBeats() const;
 
 	float values[ P_COUNT ]{};
+	// The value the host last sent or read back, per parameter. Menus that act on
+	// a choice (presets, font menus) and the Slide position react only when this
+	// changes, so a host that re-sends unchanged values never re-applies them.
+	float hostKnown[ P_COUNT ];
+	bool hostChanged( unsigned index, float value );
 	std::vector< signed char > visibility;// last visibility sent to the host
 	std::string text, fontText, fontFile, textFile;
 	std::string textReturnBuffer, displayBuffer;
@@ -199,7 +200,6 @@ private:
 	// Slides
 	int slideCount       = 1;
 	int slideIndex       = 0;// shown slide
-	int buttonOffset     = 0;// Next/Previous presses since the Slide parameter last changed
 	int lastSlideShown   = -1;
 	double slideStartBeat = 0.0;
 	std::string lastSlidesSource;
@@ -224,11 +224,6 @@ private:
 	std::vector< GlyphState > glyphStates;
 	std::vector< GlyphInstance > instances;
 	uint64_t prewarmedKey = 0;
-
-	// Diagnostics (written to Resolume's log once per instance)
-	std::chrono::steady_clock::time_point createdAt;
-	double initGLMs = 0;
-	bool loggedStartup = false;
 };
 
 }//namespace textplus

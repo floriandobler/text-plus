@@ -69,8 +69,7 @@ struct Style
 	float shadowSoftness = 0, shadowSpread = 0;
 	Color glow;
 	float glowRadius = 0, glowStrength = 0;
-	float edgeSoftness = 1.0f;     // px of anti-aliasing
-	bool premultipliedOutput = false;// Resolume composites FFGL sources as straight alpha
+	float edgeSoftness = 1.0f;// px of anti-aliasing
 
 	float outerEdge() const;
 	// Distance beyond the glyph outline the effects need, in px.

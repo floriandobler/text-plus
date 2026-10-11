@@ -6,7 +6,7 @@ Schatten und Glow entstehen ohne Blur-Pässe, die Kanten bleiben in jeder Größ
 scharf, und zwei Animatoren bewegen, skalieren, drehen, blenden und färben den
 Text pro Zeichen, Wort oder Zeile.
 
-Stand: Version 0.2. macOS zuerst (Universal Binary), Windows vorbereitet.
+Stand: Version 0.3. macOS zuerst (Universal Binary), Windows vorbereitet.
 
 ## Bauen und installieren (macOS)
 
@@ -36,7 +36,8 @@ kopiere `build-mac/TextPlus.bundle` dorthin.
 | Text | Color Tags | `{#ff8800}farbig{/}` färbt Textstellen; `{{` für ein echtes `{` |
 | Text | Text File | .txt-Datei als Textquelle, wird bei Änderung automatisch neu geladen |
 | Text | Slides | Off, Each Line, Blocks (`\|\|` oder Leerzeile trennt) |
-| Text | Slide, Advance | Nummer der Slide; weiterschalten per Parameter, Next/Previous-Buttons oder alle N Beats |
+| Text | Slide | Position 0–1, gleichmäßig auf alle Slides verteilt (Anzeige „2 / 5“). Mit BPM Sync animiert läuft sie durch alle Slides und beginnt wieder bei der ersten |
+| Text | Next Slide, Previous Slide | einzeln mappbare Buttons; springen am Ende zurück auf die erste bzw. letzte Slide |
 | Font | Font | `Familie / Stil`, z. B. `Helvetica Neue / Bold`. Tippen geht: `din bold` |
 | Font | Family, Style | Auswahllisten, schreiben ins Feld „Font“ |
 | Font | Font File | .ttf/.otf/.ttc direkt laden |
@@ -54,11 +55,10 @@ kopiere `build-mac/TextPlus.bundle` dorthin.
 | Animator 1, 2 | Preset | lädt Werte, springt danach zurück auf „Load preset…“ |
 | Animator 1, 2 | Mode | Off, Sequence In, Sequence Out, Wave, Random, Constant |
 | Animator 1, 2 | Unit, Order | Character/Word/Line; Forward, Reverse, From Center, From Edges, Random |
-| Animator 1, 2 | Drive, Progress, Duration | Progress-Regler, Neustart bei Slide-Wechsel oder Loop (Dauer in Beats) |
+| Animator 1, 2 | Drive, Progress, Duration | Progress-Regler (für Loops: Progress per BPM Sync animieren) oder „Play on Slide Change“: spielt bei jedem Slide-Wechsel einmal ab, Dauer in Beats |
 | Animator 1, 2 | Spread, Ease, Speed | gleichzeitig bewegte Einheiten bzw. Wellenlänge; Linear/Smooth/Ease Out/Overshoot; pro Beat |
 | Animator 1, 2 | Offset X/Y, Scale, Rotation, Opacity, Color | der „Weg“-Zustand; Color-Alpha = Stärke der Färbung |
 | Quality | Edge Softness | Anti-Aliasing-Breite in px |
-| Quality | Alpha Output | Straight (Resolume) oder Premultiplied |
 
 Der Animator beschreibt, wo eine Einheit „weg“ ist (versetzt, verkleinert,
 gedreht, unsichtbar, eingefärbt). Sequence In bringt die Einheiten mit Progress
@@ -90,8 +90,12 @@ tests/        Unit-Tests + Headless-FFGL-Host (Linux/EGL)
 ```
 
 Shader werden einmal pro GL-Kontext kompiliert und von allen Instanzen geteilt.
-Jede Instanz schreibt beim Start eine Zeile ins Resolume-Log
-(„Text+: instance ready after … ms“).
+Die Ausgabe ist straight alpha, so wie Resolume Sources verrechnet.
+
+Menüs, die etwas auslösen (Presets, Family, Style), und die Slide-Position
+reagieren nur auf Werte, die sich gegenüber dem zuletzt vom Host gesendeten
+Wert geändert haben. Schickt Resolume unveränderte Werte erneut, wird nichts
+noch einmal angewendet.
 
 Ausführlich: Dokument „Resolume Text-Plugin: Recherche & Architektur“.
 
@@ -107,10 +111,12 @@ Plugin wie Resolume über `plugMain`, rendert in einem OpenGL-4.1-Core-Kontext
 ./build/ffgl_test_host build/TextPlus.so out/x.png 1280 720 \
     "Text=Hallo" "Outline Width=20" "Glow Radius=40" @bg=0.9,0.3,0.1
 # "+Name=Wert" setzt einen Wert erst nach einigen Frames (wie eine Nutzeraktion),
-# "@dt=0.0166 @frames=90" lässt die Zeit laufen, "@print=A1 Mode" gibt Werte aus.
+# "@dt=0.0166 @frames=90" lässt die Zeit laufen, "@print=A1 Mode" gibt Werte aus,
+# "@ramp=Slide:0:1" animiert einen Parameter, "@resend=stale" schickt wie ein Host
+# jeden Frame alle Werte erneut, "@trace=…" und "@dump=dir" zeigen jeden Frame.
 ```
 
-## Bekannte Grenzen (Version 0.2)
+## Bekannte Grenzen (Version 0.3)
 
 - Resolumes Textfeld für Plugins ist einzeilig: Zeilen per `|` trennen oder eine
   Text-Datei verwenden.
@@ -119,6 +125,9 @@ Plugin wie Resolume über `plugMain`, rendert in einem OpenGL-4.1-Core-Kontext
 - Rechts-nach-links-Text wird geshaped, aber nicht bidirektional umgebrochen.
 - Kein Font-Fallback: Zeichen, die in der Schrift fehlen, erscheinen als .notdef.
 - Neue Glyphen erscheinen einen Frame später (Erzeugung im Hintergrund).
+- Kompositionen mit Text+ 0.2: Slides und Animator-Drive neu einstellen (Parameter geändert).
+- Kurzer Hänger beim Reinziehen oder Kopieren eines Clips: tritt bei Resolumes
+  eigenen Text-Sources genauso auf, liegt also bei Resolume.
 - Windows: Code ist vorbereitet (Font-Ordner-Scan), Build noch nicht eingerichtet.
 
 ## Lizenzen der Abhängigkeiten

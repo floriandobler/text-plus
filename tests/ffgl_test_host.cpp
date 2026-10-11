@@ -156,6 +156,17 @@ int main( int argc, char** argv )
 	double dt       = 0.0;// seconds per frame; > 0 plays time forward and renders exactly @frames frames
 	std::string bg  = "checker";
 	bool straight   = true;// Text+ outputs straight alpha by default (Resolume's convention)
+	// "@resend=stale|sync": like a host that sends all its parameter values every frame.
+	// stale = the host ignores value events from the plugin, sync = it reads them back first.
+	std::string resend;
+	std::vector< std::string > resendOnly;// "@resend=stale:A1 Preset;A1 Mode" limits the re-sent parameters
+	// "@ramp=Param:from:to": animates a parameter linearly over all frames (host-side animation)
+	std::string rampName;
+	float rampFrom = 0, rampTo = 0;
+	// "@dump=dir": writes every frame as dir/fNNN.png
+	std::string dumpDir;
+	std::vector< std::string > tracePrint;// "@trace=A1 Spread,...": print values every frame
+	std::map< unsigned, float > hostModel;
 
 	FFGLViewportStruct vp{ 0, 0, (GLuint)W, (GLuint)H };
 	auto tInst        = std::chrono::steady_clock::now();
@@ -176,6 +187,7 @@ int main( int argc, char** argv )
 	std::vector< std::string > keep;// text params must outlive the call
 	keep.reserve( 256 );
 	std::vector< std::string > deferred;// "+Param=value": applied after the first frames (user interaction)
+	std::vector< std::string > deferred2;// "++Param=value": applied one frame later (a second user action)
 	auto setParam = [ & ]( const std::string& key, const std::string& val ) -> bool {
 		auto it = byName.find( key );
 		if( it == byName.end() )
@@ -194,6 +206,7 @@ int main( int argc, char** argv )
 		{
 			float f = (float)std::atof( val.c_str() );
 			std::memcpy( &sp.NewParameterValue.UIntValue, &f, 4 );
+			hostModel[ it->second ] = f;
 		}
 		call( FF_SET_PARAMETER, ptr( &sp ), inst );
 		return true;
@@ -201,6 +214,11 @@ int main( int argc, char** argv )
 	for( int a = 5; a < argc; ++a )
 	{
 		std::string arg = argv[ a ];
+		if( arg.size() > 1 && arg[ 0 ] == '+' && arg[ 1 ] == '+' )
+		{
+			deferred2.push_back( arg.substr( 2 ) );
+			continue;
+		}
 		if( !arg.empty() && arg[ 0 ] == '+' )
 		{
 			deferred.push_back( arg.substr( 1 ) );
@@ -212,6 +230,44 @@ int main( int argc, char** argv )
 		std::string key = arg.substr( 0, eq ), val = arg.substr( eq + 1 );
 		if( key == "@instances" )
 			continue;
+		if( key == "@resend" )
+		{
+			size_t colon = val.find( ':' );
+			resend       = val.substr( 0, colon );
+			while( colon != std::string::npos )
+			{
+				size_t next = val.find( ';', colon + 1 );
+				resendOnly.push_back( val.substr( colon + 1, next == std::string::npos ? std::string::npos : next - colon - 1 ) );
+				colon = next;
+			}
+			continue;
+		}
+		if( key == "@dump" )
+		{
+			dumpDir = val;
+			continue;
+		}
+		if( key == "@trace" )
+		{
+			size_t start = 0;
+			while( true )
+			{
+				size_t comma = val.find( ',', start );
+				tracePrint.push_back( val.substr( start, comma == std::string::npos ? std::string::npos : comma - start ) );
+				if( comma == std::string::npos )
+					break;
+				start = comma + 1;
+			}
+			continue;
+		}
+		if( key == "@ramp" )
+		{
+			size_t c1 = val.find( ':' ), c2 = val.rfind( ':' );
+			rampName  = val.substr( 0, c1 );
+			rampFrom  = (float)std::atof( val.substr( c1 + 1, c2 - c1 - 1 ).c_str() );
+			rampTo    = (float)std::atof( val.substr( c2 + 1 ).c_str() );
+			continue;
+		}
 		if( key == "@frames" )
 		{
 			frames = std::atoi( val.c_str() );
@@ -278,6 +334,44 @@ int main( int argc, char** argv )
 		SetBeatinfoStruct beat{ 120.0f, (float)std::fmod( t * 0.5, 1.0 ) };
 		call( FF_SET_BEATINFO, ptr( &beat ), inst );
 
+		if( !rampName.empty() && f >= 10 )
+		{
+			const float k = frames > 11 ? float( f - 10 ) / float( frames - 11 ) : 1.0f;
+			char v[ 32 ];
+			std::snprintf( v, sizeof( v ), "%g", rampFrom + ( rampTo - rampFrom ) * k );
+			setParam( rampName, v );
+		}
+		if( !resend.empty() )
+		{
+			if( resend == "sync" )
+			{
+				ParamEventStruct evs[ 64 ];
+				GetParamEventsStruct ge{ 64, evs };
+				call( FF_GET_PARAMETER_EVENTS, ptr( &ge ), inst );
+				for( unsigned e = 0; e < ge.numEvents; ++e )
+					if( ( evs[ e ].eventFlags & FF_EVENT_FLAG_VALUE ) && hostModel.count( evs[ e ].ParameterNumber ) )
+					{
+						FFMixed v = call( FF_GET_PARAMETER, u( evs[ e ].ParameterNumber ), inst );
+						std::memcpy( &hostModel[ evs[ e ].ParameterNumber ], &v.UIntValue, 4 );
+					}
+			}
+			for( auto& [ idx, val ] : hostModel )
+			{
+				if( !resendOnly.empty() )
+				{
+					bool listed = false;
+					for( const std::string& n : resendOnly )
+						listed = listed || ( byName.count( n ) && byName[ n ] == idx );
+					if( !listed )
+						continue;
+				}
+				SetParameterStruct sp{};
+				sp.ParameterNumber = idx;
+				std::memcpy( &sp.NewParameterValue.UIntValue, &val, 4 );
+				call( FF_SET_PARAMETER, ptr( &sp ), inst );
+			}
+		}
+
 		glClearColor( 0, 0, 0, 0 );
 		glClear( GL_COLOR_BUFFER_BIT );
 		GLSnapshot before = GLSnapshot::take();
@@ -302,7 +396,41 @@ int main( int argc, char** argv )
 			deferred.clear();
 			stable = 0;
 		}
+		if( f == 9 && !deferred2.empty() )
+		{
+			for( const std::string& d : deferred2 )
+				setParam( d.substr( 0, d.find( '=' ) ), d.substr( d.find( '=' ) + 1 ) );
+			deferred2.clear();
+			stable = 0;
+		}
 		glReadPixels( 0, 0, W, H, GL_RGBA, GL_UNSIGNED_BYTE, pixels.data() );
+		if( !tracePrint.empty() )
+		{
+			std::printf( "  frame %3d:", f );
+			for( const std::string& name : tracePrint )
+			{
+				auto it = byName.find( name );
+				if( it == byName.end() )
+					continue;
+				FFMixed v = call( FF_GET_PARAMETER, u( it->second ), inst );
+				std::printf( "  %s=%g", name.c_str(), *(float*)&v.UIntValue );
+			}
+			std::printf( "\n" );
+		}
+		if( !dumpDir.empty() )
+		{
+			std::vector< unsigned char > rgb( (size_t)W * H * 3 );
+			for( int y = 0; y < H; ++y )
+				for( int x = 0; x < W; ++x )
+				{
+					const unsigned char* px = &pixels[ ( (size_t)( H - 1 - y ) * W + x ) * 4 ];
+					for( int c = 0; c < 3; ++c )
+						rgb[ ( (size_t)y * W + x ) * 3 + c ] = (unsigned char)( px[ c ] * px[ 3 ] / 255 );
+				}
+			char name[ 512 ];
+			std::snprintf( name, sizeof( name ), "%s/f%03d.png", dumpDir.c_str(), f );
+			stbi_write_png( name, W, H, 3, rgb.data(), W * 3 );
+		}
 		if( dt <= 0.0 && !previous.empty() && previous == pixels && f > 10 )
 		{
 			if( ++stable >= 8 && f > 5 )
