@@ -25,12 +25,17 @@ $H $P out/glow_on_orange.png 1280 720 "Text=Kontur|wefjio Happy" "Font=DejaVu Sa
 $H $P out/fade_merged_outlines.png 1280 720 "Text=Kontur|wefjio Happy" "Font=DejaVu Sans Condensed / Bold" "Size=200" "Fill Color_Alpha=0" "Outline Width=32" "Outline Color=0.25" "Outline Color_Sat=0.65" "Outline 2 Width=17" "Glow Radius=69" "A1 Mode=1" "A1 Opacity=0" "A1 Spread=6" "A1 Progress=0.55" @bg=0.9,0.25,0.15
 $H $P out/gradient_and_tags.png 1280 360 "Text=Grad {#ff3366}ient{/} Text" "Font=Inter / Black" "Size=140" "Fill Mode=1" "Fill Color=0.15" "Fill Color_Sat=0.9" "Fill Color 2=0.55" "Fill Color 2_Sat=0.9" "Gradient Angle=-30" "Outline Width=6"
 $H $P out/preset_pop.png 1280 360 "Text=POP IN" "Font=Inter / Black" "Size=130" "+A1 Preset=5" "+A1 Progress=0.5" "Outline Width=8" "@print=A1 Preset,A1 Mode"
-$H $P out/slides_ramp.png 960 200 "Text=AAAA|BBBB|CCCC" "Font=Inter / Black" "Size=110" "Slides=1" "@ramp=Slide:0:1" "+A1 Preset=1" "+A1 Drive=1" "+A1 Duration=0.5" @dt=0.016666667 @frames=76
+$H $P out/slides_ramp.png 960 200 "Text=AAAA|BBBB|CCCC" "Font=Inter / Black" "Size=110" "Slides=1" "@ramp=Slide:0:1" "Replay on Slide Change=0.5" "+A1 Preset=1" @dt=0.016666667 @frames=76
 # Regression (0.2): a host re-sending the preset menu value must not re-apply the preset
 $H $P out/preset_resend.png 640 200 "Text=ABCDEF" "+A1 Preset=3" "++A1 Spread=1" "++A1 Offset Y=-40" "@ramp=A1 Progress:1:0" "@resend=stale:A1 Preset" @dt=0.02 @frames=20 "@print=A1 Spread,A1 Offset Y" | tee out/preset_resend.txt
 grep -q "A1 Spread *= 1 " out/preset_resend.txt && grep -q "A1 Offset Y *= -40 " out/preset_resend.txt || { echo "FEHLER: Preset wurde erneut angewendet"; exit 1; }
 # Next at the last slide wraps to the first, also when the host re-sends the old position
 $H $P out/slide_wrap.png 640 200 "Text=Eins|Zwei|Drei" "Slides=1" "Slide=0.9" "+Next Slide=1" "@resend=stale:Slide" @print=Slide | tee out/slide_wrap.txt
 grep -q "(1 / 3)" out/slide_wrap.txt || { echo "FEHLER: Slide-Wrap"; exit 1; }
+# CSV: one slide per row, cells become lines, header skipped
+$H $P out/csv_slide2.png 960 300 "Text File=tests/data/lower_thirds.csv" "Font=Inter / Bold" "Size=80" "Slide=0.9" @print=Slide | tee out/csv.txt
+grep -q "(2 / 2)" out/csv.txt || { echo "FEHLER: CSV-Slides"; exit 1; }
+# Wave: Progress is the phase
+$H $P out/wave_phase.png 960 240 "Text=Wave Phase" "Font=Inter / Black" "Size=110" "+A1 Preset=9" "++A1 Progress=0.25"
 $H $P out/menus.png 320 180 "Font=Inter / Regular" "+Style=3" @frames=16
 echo "Bilder in out/"

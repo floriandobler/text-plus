@@ -119,7 +119,7 @@ void initGlyphStates( const LayoutResult& layout, std::vector< GlyphState >& sta
 	}
 }
 
-void applyAnimator( const LayoutResult& layout, const AnimatorParams& p, double beats, std::vector< GlyphState >& states )
+void applyAnimator( const LayoutResult& layout, const AnimatorParams& p, std::vector< GlyphState >& states )
 {
 	if( p.mode == AnimMode::Off || layout.glyphs.empty() )
 		return;
@@ -155,22 +155,26 @@ void applyAnimator( const LayoutResult& layout, const AnimatorParams& p, double 
 			break;
 		}
 		case AnimMode::Wave: {
-			const double phase = beats * p.speed - r / std::max( 0.5f, p.spread );
-			signedA            = (float)std::sin( kTwoPi * phase ) * progress;
-			unsignedA          = ( 0.5f + 0.5f * (float)std::sin( kTwoPi * phase ) ) * progress;
+			// Progress is the phase: 0..1 is one full cycle, so a looping ramp is seamless.
+			const double phase = (double)p.progress - r / std::max( 0.5f, p.spread );
+			const float s      = (float)std::sin( kTwoPi * phase );
+			signedA            = s;
+			unsignedA          = 0.5f + 0.5f * s;
 			break;
 		}
 		case AnimMode::Random: {
-			// Smoothly interpolated random values, re-rolled `speed` times per beat
-			const double tpos = p.speed != 0.0f ? beats * std::fabs( p.speed ) : 0.0;
-			const double step = std::floor( tpos );
-			float f           = (float)( tpos - step );
+			// Progress 0..1 runs through a loop of `spread` random states, smoothly
+			// interpolated; state 0 follows the last one, so a looping ramp is seamless.
+			const int states  = std::max( 2, (int)std::lround( p.spread ) );
+			const float pos   = ( p.progress - std::floor( p.progress ) ) * (float)states;
+			const int step    = std::min( states - 1, (int)std::floor( pos ) );
+			float f           = pos - (float)step;
 			f                 = f * f * ( 3.0f - 2.0f * f );
-			const float v0 = hashSigned( (uint32_t)u, (uint32_t)(int64_t)step, p.seed );
-			const float v1 = hashSigned( (uint32_t)u, (uint32_t)(int64_t)step + 1u, p.seed );
-			const float v  = v0 + ( v1 - v0 ) * f;
-			signedA        = v * progress;
-			unsignedA      = ( 0.5f + 0.5f * v ) * progress;
+			const float v0    = hashSigned( (uint32_t)u, (uint32_t)step, p.seed );
+			const float v1    = hashSigned( (uint32_t)u, (uint32_t)( ( step + 1 ) % states ), p.seed );
+			const float v     = v0 + ( v1 - v0 ) * f;
+			signedA           = v;
+			unsignedA         = 0.5f + 0.5f * v;
 			break;
 		}
 		case AnimMode::Constant:

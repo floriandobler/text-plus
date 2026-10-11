@@ -12,7 +12,7 @@ if(APPLE)
     set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "Minimum macOS version")
 endif()
 
-project(TextPlus VERSION 0.3.0 LANGUAGES C CXX)
+project(TextPlus VERSION 0.4.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -37,6 +37,7 @@ add_library(tp_core STATIC
     src/core/GlyphCache.cpp
     src/core/Animator.cpp
     src/core/Utf8.cpp
+    src/core/Csv.cpp
 )
 if(APPLE)
     target_sources(tp_core PRIVATE src/core/FontPaths_mac.mm)

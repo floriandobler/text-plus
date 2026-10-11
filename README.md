@@ -6,7 +6,7 @@ Schatten und Glow entstehen ohne Blur-Pässe, die Kanten bleiben in jeder Größ
 scharf, und zwei Animatoren bewegen, skalieren, drehen, blenden und färben den
 Text pro Zeichen, Wort oder Zeile.
 
-Stand: Version 0.3. macOS zuerst (Universal Binary), Windows vorbereitet.
+Stand: Version 0.4. macOS zuerst (Universal Binary), Windows vorbereitet.
 
 ## Bauen und installieren (macOS)
 
@@ -34,7 +34,8 @@ kopiere `build-mac/TextPlus.bundle` dorthin.
 | --- | --- | --- |
 | Text | Text | Zeilenumbruch: `\|` (bei „\| = New Line“), `\n` oder echte Umbrüche |
 | Text | Color Tags | `{#ff8800}farbig{/}` färbt Textstellen; `{{` für ein echtes `{` |
-| Text | Text File | .txt-Datei als Textquelle, wird bei Änderung automatisch neu geladen |
+| Text | Text File | .txt oder .csv als Textquelle, wird bei Änderung automatisch neu geladen |
+| Text | CSV: Skip First Row | CSV: jede Zeile eine Slide, die Zellen werden ihre Zeilen (z. B. Name, Funktion). Erste Zeile = Kopfzeile. Trennzeichen `;` `,` oder Tab wird erkannt, Excel-Export (Windows-1252) wird umgewandelt |
 | Text | Slides | Off, Each Line, Blocks (`\|\|` oder Leerzeile trennt) |
 | Text | Slide | Position 0–1, gleichmäßig auf alle Slides verteilt (Anzeige „2 / 5“). Mit BPM Sync animiert läuft sie durch alle Slides und beginnt wieder bei der ersten |
 | Text | Next Slide, Previous Slide | einzeln mappbare Buttons; springen am Ende zurück auf die erste bzw. letzte Slide |
@@ -55,16 +56,20 @@ kopiere `build-mac/TextPlus.bundle` dorthin.
 | Animator 1, 2 | Preset | lädt Werte, springt danach zurück auf „Load preset…“ |
 | Animator 1, 2 | Mode | Off, Sequence In, Sequence Out, Wave, Random, Constant |
 | Animator 1, 2 | Unit, Order | Character/Word/Line; Forward, Reverse, From Center, From Edges, Random |
-| Animator 1, 2 | Drive, Progress, Duration | Progress-Regler (für Loops: Progress per BPM Sync animieren) oder „Play on Slide Change“: spielt bei jedem Slide-Wechsel einmal ab, Dauer in Beats |
-| Animator 1, 2 | Spread, Ease, Speed | gleichzeitig bewegte Einheiten bzw. Wellenlänge; Linear/Smooth/Ease Out/Overshoot; pro Beat |
+| Text | Replay on Slide Change | Beats; > 0 spielt Sequence-Animatoren bei jedem Slide-Wechsel neu ab (ersetzt dann deren Progress) |
+| Animator 1, 2 | Progress | Sequence: Position; Wave: Phase (0–1 = eine Welle); Random: Position im Zufalls-Loop; Constant: Stärke. Bewegung entsteht durch Animieren in Resolume (BPM Sync, Timeline) |
+| Animator 1, 2 | Spread, Ease | gleichzeitig bewegte Einheiten (Sequence), Wellenlänge (Wave), Anzahl Zufallszustände (Random); Linear/Smooth/Ease Out/Overshoot |
 | Animator 1, 2 | Offset X/Y, Scale, Rotation, Opacity, Color | der „Weg“-Zustand; Color-Alpha = Stärke der Färbung |
 | Quality | Edge Softness | Anti-Aliasing-Breite in px |
 
 Der Animator beschreibt, wo eine Einheit „weg“ ist (versetzt, verkleinert,
 gedreht, unsichtbar, eingefärbt). Sequence In bringt die Einheiten mit Progress
-0 → 1 nacheinander in die Ruhelage, Sequence Out umgekehrt. Wave und Random
-schwingen bzw. zittern im Takt, Constant wendet den Zustand mit der Stärke
-Progress auf alle an. Zwei Animatoren addieren sich.
+0 → 1 nacheinander in die Ruhelage, Sequence Out umgekehrt. Bei Wave ist
+Progress die Phase, bei Random die Position in einer Schleife von
+Zufallszuständen; beide laufen nahtlos, wenn Progress per BPM Sync von 0 bis 1
+loopt. Constant wendet den Zustand mit der Stärke Progress auf alle an. Zwei
+Animatoren addieren sich. Im Plugin läuft keine eigene Uhr: Bewegung entsteht
+durch Resolumes Parameter-Animation (Ausnahme: Replay on Slide Change).
 
 Die Schrift wird als Text gespeichert, nicht als Listen-Index. Kompositionen laden
 deshalb auch dann die richtige Schrift, wenn inzwischen Fonts installiert oder
@@ -116,7 +121,7 @@ Plugin wie Resolume über `plugMain`, rendert in einem OpenGL-4.1-Core-Kontext
 # jeden Frame alle Werte erneut, "@trace=…" und "@dump=dir" zeigen jeden Frame.
 ```
 
-## Bekannte Grenzen (Version 0.3)
+## Bekannte Grenzen (Version 0.4)
 
 - Resolumes Textfeld für Plugins ist einzeilig: Zeilen per `|` trennen oder eine
   Text-Datei verwenden.
@@ -125,7 +130,8 @@ Plugin wie Resolume über `plugMain`, rendert in einem OpenGL-4.1-Core-Kontext
 - Rechts-nach-links-Text wird geshaped, aber nicht bidirektional umgebrochen.
 - Kein Font-Fallback: Zeichen, die in der Schrift fehlen, erscheinen als .notdef.
 - Neue Glyphen erscheinen einen Frame später (Erzeugung im Hintergrund).
-- Kompositionen mit Text+ 0.2: Slides und Animator-Drive neu einstellen (Parameter geändert).
+- Kompositionen mit Text+ 0.2/0.3: Slides und Animatoren neu einstellen (Parameter geändert).
+- Resolume entfernt Zeilenumbrüche beim Einfügen ins Text-Feld: `|` oder eine Datei verwenden.
 - Kurzer Hänger beim Reinziehen oder Kopieren eines Clips: tritt bei Resolumes
   eigenen Text-Sources genauso auf, liegt also bei Resolume.
 - Windows: Code ist vorbereitet (Font-Ordner-Scan), Build noch nicht eingerichtet.

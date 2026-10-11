@@ -1,6 +1,7 @@
 // Unit tests for the platform-neutral core: font database, layout, glyph SDFs.
 // Run: ./layout_test [extra-font-file ...]
 #include "core/Animator.h"
+#include "core/Csv.h"
 #include "core/FontDatabase.h"
 #include "core/FontFace.h"
 #include "core/GlyphCache.h"
@@ -191,15 +192,15 @@ int main( int argc, char** argv )
 	tw.opacity  = 0;
 	tw.progress = 0.5f;
 	initGlyphStates( lay, st );
-	applyAnimator( lay, tw, 0, st );
+	applyAnimator( lay, tw, st );
 	CHECK( st[ 0 ].alpha == 1 && st[ 1 ].alpha == 1 && st[ 2 ].alpha == 0 && st[ 3 ].alpha == 0, "typewriter half: %g %g %g %g", st[ 0 ].alpha, st[ 1 ].alpha, st[ 2 ].alpha, st[ 3 ].alpha );
 	tw.progress = 1.0f;
 	initGlyphStates( lay, st );
-	applyAnimator( lay, tw, 0, st );
+	applyAnimator( lay, tw, st );
 	CHECK( st[ 3 ].alpha == 1, "typewriter full" );
 	tw.progress = 0.0f;
 	initGlyphStates( lay, st );
-	applyAnimator( lay, tw, 0, st );
+	applyAnimator( lay, tw, st );
 	CHECK( st[ 0 ].alpha == 0, "typewriter empty" );
 
 	AnimatorParams rise;
@@ -208,16 +209,16 @@ int main( int argc, char** argv )
 	rise.offsetY  = 100;
 	rise.progress = 0.0f;
 	initGlyphStates( lay, st );
-	applyAnimator( lay, rise, 0, st );
+	applyAnimator( lay, rise, st );
 	CHECK( std::fabs( st[ 0 ].dy - 100 ) < 1e-3 && std::fabs( st[ 3 ].dy - 100 ) < 1e-3, "sequence in at 0: all away" );
 	rise.progress = 1.0f;
 	initGlyphStates( lay, st );
-	applyAnimator( lay, rise, 0, st );
+	applyAnimator( lay, rise, st );
 	CHECK( std::fabs( st[ 0 ].dy ) < 1e-3 && std::fabs( st[ 3 ].dy ) < 1e-3, "sequence in at 1: all at rest" );
 	rise.order    = AnimOrder::Reverse;
 	rise.progress = 0.3f;
 	initGlyphStates( lay, st );
-	applyAnimator( lay, rise, 0, st );
+	applyAnimator( lay, rise, st );
 	CHECK( st[ 3 ].dy < st[ 0 ].dy, "reverse order: last glyph arrives first" );
 
 	AnimatorParams pop;
@@ -227,33 +228,49 @@ int main( int argc, char** argv )
 	pop.spread   = 4;
 	pop.progress = 0.45f;
 	initGlyphStates( lay, st );
-	applyAnimator( lay, pop, 0, st );
+	applyAnimator( lay, pop, st );
 	float maxS = 0;
 	for( auto& g : st )
 		maxS = std::max( maxS, g.scale );
 	CHECK( maxS > 1.0f && maxS < 1.2f, "overshoot passes 100 %% (max scale %.3f)", maxS );
 
 	AnimatorParams wave;
-	wave.mode    = AnimMode::Wave;
-	wave.offsetY = 10;
-	wave.spread  = 4;
+	wave.mode     = AnimMode::Wave;
+	wave.offsetY  = 10;
+	wave.spread   = 4;
+	wave.progress = 0.25f;
 	initGlyphStates( lay, st );
-	applyAnimator( lay, wave, 0.25, st );
+	applyAnimator( lay, wave, st );
 	float a1 = st[ 0 ].dy;
+	wave.progress = 1.25f;
 	initGlyphStates( lay, st );
-	applyAnimator( lay, wave, 0.25, st );
-	CHECK( st[ 0 ].dy == a1 && std::fabs( a1 - 10 ) < 1e-3, "wave deterministic, peak at a quarter beat (%.3f)", a1 );
+	applyAnimator( lay, wave, st );
+	CHECK( std::fabs( st[ 0 ].dy - a1 ) < 1e-3 && std::fabs( a1 - 10 ) < 1e-3, "wave: progress is the phase, peak at 0.25 (%.3f)", a1 );
+	wave.progress = 0.0f;
+	initGlyphStates( lay, st );
+	applyAnimator( lay, wave, st );
+	const float w0 = st[ 2 ].dy;
+	wave.progress = 1.0f;
+	initGlyphStates( lay, st );
+	applyAnimator( lay, wave, st );
+	CHECK( std::fabs( st[ 2 ].dy - w0 ) < 1e-3, "wave loops seamlessly" );
 
 	AnimatorParams rnd;
-	rnd.mode    = AnimMode::Random;
-	rnd.offsetX = 10;
-	rnd.speed   = 0;
+	rnd.mode     = AnimMode::Random;
+	rnd.offsetX  = 10;
+	rnd.spread   = 5;
+	rnd.progress = 0.0f;
 	initGlyphStates( lay, st );
-	applyAnimator( lay, rnd, 3.7, st );
+	applyAnimator( lay, rnd, st );
 	float r0 = st[ 0 ].dx;
+	rnd.progress = 1.0f;
 	initGlyphStates( lay, st );
-	applyAnimator( lay, rnd, 9.1, st );
-	CHECK( st[ 0 ].dx == r0 && std::fabs( r0 ) <= 10.0f, "random with speed 0 is static" );
+	applyAnimator( lay, rnd, st );
+	const float r1 = st[ 0 ].dx;
+	rnd.progress = 0.5f;
+	initGlyphStates( lay, st );
+	applyAnimator( lay, rnd, st );
+	CHECK( r0 == r1 && std::fabs( r0 ) <= 10.0f && st[ 0 ].dx != r0, "random loops seamlessly and moves in between" );
 
 	// two animators stack; colour layers
 	AnimatorParams col;
@@ -262,8 +279,8 @@ int main( int argc, char** argv )
 	col.colorAmount = 1.0f;
 	col.color       = Rgb{ 0, 1, 0 };
 	initGlyphStates( lay, st );
-	applyAnimator( lay, rise, 0, st );
-	applyAnimator( lay, col, 0, st );
+	applyAnimator( lay, rise, st );
+	applyAnimator( lay, col, st );
 	CHECK( st[ 1 ].tintAmount == 1.0f && st[ 1 ].tint.g == 1.0f, "colour tint" );
 	std::printf( "ok   animation\n" );
 
@@ -292,6 +309,19 @@ int main( int argc, char** argv )
 	auto second = cache.get( face, gidA, 0 );
 	CHECK( !first && second && !second->empty, "async glyph generation" );
 	std::printf( "ok   glyph cache\n" );
+
+	// CSV: delimiter detection, quoted cells with line breaks, header row, encoding
+	{
+		auto rows = parseCsv( "Name;Funktion\r\nAnna Muster;\"Regie; Licht\"\r\n\"Ben \"\"B\"\" Beispiel\";\"Ton\nund Video\"\r\n;\r\n" );
+		CHECK( rows.size() == 4 && rows[ 1 ].size() == 2 && rows[ 1 ][ 1 ] == "Regie; Licht", "csv: semicolon, quoted delimiter" );
+		CHECK( rows.size() > 2 && rows[ 2 ][ 0 ] == "Ben \"B\" Beispiel" && rows[ 2 ][ 1 ] == "Ton\nund Video", "csv: escaped quotes, line break in cell" );
+		auto slides = csvSlides( rows, true );
+		CHECK( slides.size() == 2 && slides[ 0 ] == "Anna Muster\nRegie; Licht", "csv: rows -> slides, header skipped, empty row dropped" );
+		CHECK( parseCsv( "a,b\tc\n" )[ 0 ].size() == 2 && parseCsv( "a\tb\tc,d\n" )[ 0 ].size() == 3, "csv: comma / tab detection" );
+		CHECK( toUtf8( "M\xFCller \x80" ) == "M\xC3\xBCller \xE2\x82\xAC" && toUtf8( "\xEF\xBB\xBFM\xC3\xBCller" ) == "M\xC3\xBCller", "csv: Windows-1252 and UTF-8 BOM" );
+		CHECK( isCsvPath( "/x/Namen.CSV" ) && !isCsvPath( "/x/a.txt" ), "csv: path detection" );
+		std::printf( "ok   csv\n" );
+	}
 
 	std::printf( g_failures ? "\n%d FAILURES\n" : "\nALL TESTS PASSED\n", g_failures );
 	return g_failures ? 1 : 0;

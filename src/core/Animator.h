@@ -13,9 +13,13 @@
 //      Sequence In   units travel from away -> rest one after another as
 //                    Progress goes 0 -> 1 ("Spread" = how many units move at once)
 //      Sequence Out  rest -> away
-//      Wave          travelling sine wave (Spread = wavelength in units)
-//      Random        per-unit random values, re-rolled Speed times per beat
+//      Wave          travelling sine wave; Progress is the phase (0..1 = one
+//                    cycle, loops seamlessly), Spread the wavelength in units
+//      Random        per-unit random values; Progress runs through a loop of
+//                    Spread random states (0 and 1 are the same state)
 //      Constant      every unit gets amount = Progress
+// There is no clock inside the animator: everything moves because the host
+// animates Progress (BPM sync, timeline, OSC), so it is always scrubbable.
 //  - Order changes which unit goes first (forward, reverse, centre, edges, random).
 // Several animators stack: offsets and rotations add, scale and opacity
 // multiply, colours layer.
@@ -64,9 +68,8 @@ struct AnimatorParams
 	AnimUnit unit   = AnimUnit::Character;
 	AnimOrder order = AnimOrder::Forward;
 	AnimEase ease   = AnimEase::Smooth;
-	float progress  = 1.0f;// 0..1 (sequence position, wave/random/constant intensity)
-	float spread    = 3.0f;// units moving at once (sequence) or wavelength (wave)
-	float speed     = 1.0f;// cycles (wave) or re-rolls (random) per beat
+	float progress  = 1.0f;// 0..1: sequence position, wave phase, random position, constant amount
+	float spread    = 3.0f;// units moving at once (sequence), wavelength (wave), random states (random)
 	// away state
 	float offsetX = 0, offsetY = 0;// px, y down
 	float scale       = 1.0f;      // 1 = 100 %
@@ -90,7 +93,7 @@ struct GlyphState
 // Resets `states` to rest (one per laid glyph) with inline colours applied.
 void initGlyphStates( const LayoutResult& layout, std::vector< GlyphState >& states );
 // Applies one animator on top of the current states.
-void applyAnimator( const LayoutResult& layout, const AnimatorParams& params, double beats, std::vector< GlyphState >& states );
+void applyAnimator( const LayoutResult& layout, const AnimatorParams& params, std::vector< GlyphState >& states );
 // Layers colour c with amount k over the glyph's current tint.
 void layerTint( GlyphState& s, const Rgb& c, float k );
 

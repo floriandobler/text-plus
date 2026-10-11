@@ -1,5 +1,6 @@
 #include "TextSource.h"
 
+#include "core/Csv.h"
 #include "core/GlyphCache.h"
 
 #include <algorithm>
@@ -33,7 +34,7 @@ CFFGLPluginInfo PluginInfo( PluginFactory< TextSource >,// create method
 							2,                           // plugin minor
 							FF_SOURCE,
 							"Text source with distance-field outlines, shadows, glow and per-character animation",
-							"Text+ 0.3",
+							"Text+ 0.4",
 							0, nullptr, initialiseLibrary, nullptr );
 
 const char* kGroupText     = "Text";
@@ -52,11 +53,6 @@ enum SlidesMode
 	SLIDES_OFF,
 	SLIDES_LINES,
 	SLIDES_BLOCKS
-};
-enum DriveMode
-{
-	DRIVE_MANUAL,
-	DRIVE_SLIDE
 };
 
 const std::vector< const char* > kPresetNames = { "Load preset...", "Typewriter", "Fade In", "Rise In", "Drop In", "Pop In", "Spin In",
@@ -296,14 +292,16 @@ void TextSource::defineParameters()
 	SetParamGroup( P_TEXT, kGroupText );
 	boolean( P_PIPE_NEWLINE, "| = New Line", kGroupText, true );
 	boolean( P_MARKUP, "Color Tags", kGroupText, true );
-	SetFileParamInfo( P_TEXT_FILE, "Text File", { "txt", "text", "md" }, "" );
+	SetFileParamInfo( P_TEXT_FILE, "Text File", { "txt", "text", "md", "csv", "tsv" }, "" );
 	SetParamGroup( P_TEXT_FILE, kGroupText );
+	boolean( P_CSV_HEADER, "CSV: Skip First Row", kGroupText, true );
 	option( P_SLIDES, "Slides", kGroupText, { "Off", "Each Line", "Blocks (|| or empty line)" }, SLIDES_OFF );
 	// 0..1 split into equal shares: BPM sync on this slider cycles through all
 	// slides and wraps back to the first, whatever the number of slides.
 	range( P_SLIDE, "Slide", kGroupText, 0.0f, 0.0f, 1.0f );
 	event( P_NEXT_SLIDE, "Next Slide", kGroupText );
 	event( P_PREV_SLIDE, "Previous Slide", kGroupText );
+	range( P_REPLAY, "Replay on Slide Change", kGroupText, 0.0f, 0.0f, 16.0f );
 
 	// Font
 	SetParamInfo( P_FONT, "Font", FF_TYPE_TEXT, "" );
@@ -367,12 +365,9 @@ void TextSource::defineParameters()
 		option( id( AP_MODE ), pre + "Mode", g, { "Off", "Sequence In", "Sequence Out", "Wave", "Random", "Constant" }, 0, "Mode" );
 		option( id( AP_UNIT ), pre + "Unit", g, { "Character", "Word", "Line" }, 0, "Unit" );
 		option( id( AP_ORDER ), pre + "Order", g, { "Forward", "Reverse", "From Center", "From Edges", "Random" }, 0, "Order" );
-		option( id( AP_DRIVE ), pre + "Drive", g, { "Progress Slider", "Play on Slide Change" }, DRIVE_MANUAL, "Drive" );
 		range( id( AP_PROGRESS ), pre + "Progress", g, 1.0f, 0.0f, 1.0f, "Progress" );
-		range( id( AP_DURATION ), pre + "Duration", g, 2.0f, 0.25f, 64.0f, "Duration (beats)" );
 		range( id( AP_SPREAD ), pre + "Spread", g, 3.0f, 0.0f, 50.0f, "Spread" );
 		option( id( AP_EASE ), pre + "Ease", g, { "Linear", "Smooth", "Ease Out", "Overshoot" }, 1, "Ease" );
-		range( id( AP_SPEED ), pre + "Speed", g, 1.0f, -8.0f, 8.0f, "Speed (per beat)" );
 		range( id( AP_OFFSET_X ), pre + "Offset X", g, 0.0f, -2000.0f, 2000.0f, "Offset X" );
 		range( id( AP_OFFSET_Y ), pre + "Offset Y", g, 0.0f, -2000.0f, 2000.0f, "Offset Y" );
 		range( id( AP_SCALE ), pre + "Scale", g, 100.0f, 0.0f, 400.0f, "Scale" );
@@ -408,10 +403,14 @@ void TextSource::updateVisibility( bool raiseEvent )
 	show( P_BOX_HEIGHT, box );
 	show( P_FIT, box );
 
-	const bool slidesOn = (int)values[ P_SLIDES ] != SLIDES_OFF;
+	const bool slidesOn = csvActive || (int)values[ P_SLIDES ] != SLIDES_OFF;
+	const bool replay   = slidesOn && values[ P_REPLAY ] > 0.0f;
+	show( P_CSV_HEADER, csvActive );
+	show( P_SLIDES, !csvActive );// a CSV is always one slide per row
 	show( P_SLIDE, slidesOn );
 	show( P_NEXT_SLIDE, slidesOn );
 	show( P_PREV_SLIDE, slidesOn );
+	show( P_REPLAY, slidesOn );
 
 	const int fillMode = (int)values[ P_FILL_MODE ];
 	show( P_FILL2_H, fillMode != 0 );
@@ -423,15 +422,11 @@ void TextSource::updateVisibility( bool raiseEvent )
 		const bool on    = mode != AnimMode::Off;
 		const bool seq   = mode == AnimMode::SequenceIn || mode == AnimMode::SequenceOut;
 		const bool waveR = mode == AnimMode::Wave || mode == AnimMode::Random;
-		const int drive  = (int)values[ animParam( a, AP_DRIVE ) ];
 		show( animParam( a, AP_UNIT ), on );
 		show( animParam( a, AP_ORDER ), seq || mode == AnimMode::Wave );
-		show( animParam( a, AP_DRIVE ), on && !waveR );
-		show( animParam( a, AP_PROGRESS ), on );
-		show( animParam( a, AP_DURATION ), on && !waveR && drive == DRIVE_SLIDE );
-		show( animParam( a, AP_SPREAD ), seq || mode == AnimMode::Wave );
+		show( animParam( a, AP_PROGRESS ), on && !( seq && replay ) );// replay drives sequences itself
+		show( animParam( a, AP_SPREAD ), seq || waveR );
 		show( animParam( a, AP_EASE ), seq );
-		show( animParam( a, AP_SPEED ), waveR );
 		for( AnimParam p : { AP_OFFSET_X, AP_OFFSET_Y, AP_SCALE, AP_ROTATION, AP_OPACITY, AP_COLOR_H } )
 			show( animParam( a, p ), on );
 	}
@@ -536,25 +531,28 @@ float TextSource::GetFloatParameter( unsigned int index )
 
 char* TextSource::GetTextParameter( unsigned int index )
 {
+	if( index >= P_COUNT )
+		return nullptr;
+	std::string& out = textBuffers[ index ];
 	switch( index )
 	{
 	case P_TEXT:
-		textReturnBuffer = text;
+		out = text;
 		break;
 	case P_FONT:
-		textReturnBuffer = fontText;
+		out = fontText;
 		break;
 	case P_FONT_FILE:
-		textReturnBuffer = fontFile;
+		out = fontFile;
 		break;
 	case P_TEXT_FILE:
-		textReturnBuffer = textFile;
+		out = textFile;
 		break;
 	default:
-		textReturnBuffer.clear();
+		out.clear();
 		break;
 	}
-	return const_cast< char* >( textReturnBuffer.c_str() );
+	return const_cast< char* >( out.c_str() );
 }
 
 char* TextSource::GetParameterDisplay( unsigned int index )
@@ -604,6 +602,12 @@ char* TextSource::GetParameterDisplay( unsigned int index )
 	case P_SLIDE:
 		std::snprintf( buf, sizeof( buf ), "%d / %d", slideFromPosition( v, slideCount ) + 1, slideCount );
 		break;
+	case P_REPLAY:
+		if( v <= 0.0f )
+			std::snprintf( buf, sizeof( buf ), "Off" );
+		else
+			std::snprintf( buf, sizeof( buf ), "%.2g beats", v );
+		break;
 	default:
 		if( isAnim( AP_PROGRESS ) )
 			std::snprintf( buf, sizeof( buf ), "%.0f %%", v * 100.0f );
@@ -613,15 +617,27 @@ char* TextSource::GetParameterDisplay( unsigned int index )
 			std::snprintf( buf, sizeof( buf ), "%.0f %%", v );
 		else if( isAnim( AP_ROTATION ) )
 			std::snprintf( buf, sizeof( buf ), "%.0f\xC2\xB0", v );
-		else if( isAnim( AP_DURATION ) )
-			std::snprintf( buf, sizeof( buf ), "%.2g beats", v );
 		else if( isAnim( AP_SPREAD ) )
-			std::snprintf( buf, sizeof( buf ), "%.1f units", v );
+		{
+			const int a     = index == animParam( 0, AP_SPREAD ) ? 0 : 1;
+			const auto mode = (AnimMode)(int)values[ animParam( a, AP_MODE ) ];
+			if( mode == AnimMode::Random )
+				std::snprintf( buf, sizeof( buf ), "%d states", std::max( 2, (int)std::lround( v ) ) );
+			else if( mode == AnimMode::Wave )
+				std::snprintf( buf, sizeof( buf ), "%.1f units / wave", v );
+			else
+				std::snprintf( buf, sizeof( buf ), "%.1f units", v );
+		}
 		else
-			return CFFGLPlugin::GetParameterDisplay( index );
+		{
+			const char* d = CFFGLPlugin::GetParameterDisplay( index );
+			std::snprintf( buf, sizeof( buf ), "%s", d ? d : "" );
+		}
 	}
-	displayBuffer = buf;
-	return const_cast< char* >( displayBuffer.c_str() );
+	if( index >= P_COUNT )
+		return nullptr;
+	displayBuffers[ index ] = buf;
+	return const_cast< char* >( displayBuffers[ index ].c_str() );
 }
 
 FFResult TextSource::SetTime( double time )
@@ -803,7 +819,7 @@ void TextSource::pollTextFile()
 	if( stamp == textFileStamp )
 		return;
 	textFileStamp   = stamp;
-	textFileContent = stamp >= 0 ? readTextFile( textFile ) : std::string();
+	textFileContent = stamp >= 0 ? toUtf8( readTextFile( textFile ) ) : std::string();
 	if( stamp < 0 )
 		FFGLLog::LogToHost( ( "Text+: cannot read text file " + textFile ).c_str() );
 }
@@ -820,18 +836,25 @@ void TextSource::stepSlide( int delta )
 std::string TextSource::currentText()
 {
 	pollTextFile();
-	const std::string& source = !textFile.empty() && textFileStamp >= 0 ? textFileContent : text;
-	const int mode            = (int)values[ P_SLIDES ];
+	const bool fromFile = !textFile.empty() && textFileStamp >= 0;
+	const std::string& source = fromFile ? textFileContent : text;
+	const bool csv            = fromFile && isCsvPath( textFile );
+	if( csv != csvActive )
+	{
+		csvActive = csv;
+		updateVisibility( true );
+	}
+	const int mode = csv ? -1 : (int)values[ P_SLIDES ];
 	if( mode == SLIDES_OFF )
 	{
 		slideCount = 1;
 		slideIndex = 0;
 		return source;
 	}
-	const std::string key = std::to_string( mode ) + ( values[ P_PIPE_NEWLINE ] > 0.5f ? "|" : "-" ) + source;
+	const std::string key = std::to_string( mode ) + ( values[ P_PIPE_NEWLINE ] > 0.5f ? "|" : "-" ) + ( values[ P_CSV_HEADER ] > 0.5f ? "h" : "-" ) + source;
 	if( key != lastSlidesSource )
 	{
-		slides           = splitSlides( source, mode, values[ P_PIPE_NEWLINE ] > 0.5f );
+		slides           = csv ? csvSlides( parseCsv( source ), values[ P_CSV_HEADER ] > 0.5f ) : splitSlides( source, mode, values[ P_PIPE_NEWLINE ] > 0.5f );
 		lastSlidesSource = key;
 	}
 	slideCount = (int)slides.size();
@@ -849,24 +872,24 @@ void TextSource::applyPreset( int a, int preset )
 		AnimMode mode;
 		AnimUnit unit;
 		AnimEase ease;
-		float spread, speed, offX, offY, scale, rot, opacity, colorAlpha;
+		float spread, offX, offY, scale, rot, opacity, colorAlpha;
 	};
 	// Each preset describes the "away" state; Progress 0 -> 1 plays it in (or out).
 	// Offsets use the UI convention: Offset Y > 0 is up, like Position Y.
 	static const P presets[] = {
-		/* 0 unused       */ { AnimMode::Off, AnimUnit::Character, AnimEase::Smooth, 3, 1, 0, 0, 100, 0, 100, 0 },
-		/* Typewriter     */ { AnimMode::SequenceIn, AnimUnit::Character, AnimEase::Linear, 0, 1, 0, 0, 100, 0, 0, 0 },
-		/* Fade In        */ { AnimMode::SequenceIn, AnimUnit::Character, AnimEase::Smooth, 4, 1, 0, 0, 100, 0, 0, 0 },
-		/* Rise In        */ { AnimMode::SequenceIn, AnimUnit::Character, AnimEase::EaseOut, 4, 1, 0, -120, 100, 0, 0, 0 },
-		/* Drop In        */ { AnimMode::SequenceIn, AnimUnit::Character, AnimEase::Overshoot, 3, 1, 0, 160, 100, 0, 0, 0 },
-		/* Pop In         */ { AnimMode::SequenceIn, AnimUnit::Character, AnimEase::Overshoot, 3, 1, 0, 0, 0, 0, 0, 0 },
-		/* Spin In        */ { AnimMode::SequenceIn, AnimUnit::Character, AnimEase::EaseOut, 4, 1, 0, 0, 0, 180, 0, 0 },
-		/* Words Slide In */ { AnimMode::SequenceIn, AnimUnit::Word, AnimEase::EaseOut, 1.5f, 1, -220, 0, 100, 0, 0, 0 },
-		/* Fade Out       */ { AnimMode::SequenceOut, AnimUnit::Character, AnimEase::Smooth, 4, 1, 0, 0, 100, 0, 0, 0 },
-		/* Wave           */ { AnimMode::Wave, AnimUnit::Character, AnimEase::Smooth, 8, 1, 0, 30, 100, 0, 100, 0 },
-		/* Jitter         */ { AnimMode::Random, AnimUnit::Character, AnimEase::Smooth, 3, 4, 6, 6, 100, 8, 100, 0 },
-		/* Color Sweep    */ { AnimMode::Wave, AnimUnit::Character, AnimEase::Smooth, 12, 0.5f, 0, 0, 100, 0, 100, 1 },
-		/* Reset          */ { AnimMode::Off, AnimUnit::Character, AnimEase::Smooth, 3, 1, 0, 0, 100, 0, 100, 0 },
+		/* 0 unused       */ { AnimMode::Off, AnimUnit::Character, AnimEase::Smooth, 3, 0, 0, 100, 0, 100, 0 },
+		/* Typewriter     */ { AnimMode::SequenceIn, AnimUnit::Character, AnimEase::Linear, 0, 0, 0, 100, 0, 0, 0 },
+		/* Fade In        */ { AnimMode::SequenceIn, AnimUnit::Character, AnimEase::Smooth, 4, 0, 0, 100, 0, 0, 0 },
+		/* Rise In        */ { AnimMode::SequenceIn, AnimUnit::Character, AnimEase::EaseOut, 4, 0, -120, 100, 0, 0, 0 },
+		/* Drop In        */ { AnimMode::SequenceIn, AnimUnit::Character, AnimEase::Overshoot, 3, 0, 160, 100, 0, 0, 0 },
+		/* Pop In         */ { AnimMode::SequenceIn, AnimUnit::Character, AnimEase::Overshoot, 3, 0, 0, 0, 0, 0, 0 },
+		/* Spin In        */ { AnimMode::SequenceIn, AnimUnit::Character, AnimEase::EaseOut, 4, 0, 0, 0, 180, 0, 0 },
+		/* Words Slide In */ { AnimMode::SequenceIn, AnimUnit::Word, AnimEase::EaseOut, 1.5f, -220, 0, 100, 0, 0, 0 },
+		/* Fade Out       */ { AnimMode::SequenceOut, AnimUnit::Character, AnimEase::Smooth, 4, 0, 0, 100, 0, 0, 0 },
+		/* Wave           */ { AnimMode::Wave, AnimUnit::Character, AnimEase::Smooth, 8, 0, 30, 100, 0, 100, 0 },
+		/* Jitter         */ { AnimMode::Random, AnimUnit::Character, AnimEase::Smooth, 8, 6, 6, 100, 8, 100, 0 },
+		/* Color Sweep    */ { AnimMode::Wave, AnimUnit::Character, AnimEase::Smooth, 12, 0, 0, 100, 0, 100, 1 },
+		/* Reset          */ { AnimMode::Off, AnimUnit::Character, AnimEase::Smooth, 3, 0, 0, 100, 0, 100, 0 },
 	};
 	if( preset <= 0 || preset >= (int)( sizeof( presets ) / sizeof( presets[ 0 ] ) ) )
 		return;
@@ -877,32 +900,20 @@ void TextSource::applyPreset( int a, int preset )
 	setValue( id( AP_ORDER ), 0.0f );
 	setValue( id( AP_EASE ), (float)p.ease );
 	setValue( id( AP_SPREAD ), p.spread );
-	setValue( id( AP_SPEED ), p.speed );
 	setValue( id( AP_OFFSET_X ), p.offX );
 	setValue( id( AP_OFFSET_Y ), p.offY );
 	setValue( id( AP_SCALE ), p.scale );
 	setValue( id( AP_ROTATION ), p.rot );
 	setValue( id( AP_OPACITY ), p.opacity );
 	setValue( id( AP_COLOR_A ), p.colorAlpha );
-	if( p.mode == AnimMode::Wave || p.mode == AnimMode::Random || p.mode == AnimMode::Off )
+	if( p.mode == AnimMode::Wave || p.mode == AnimMode::Random )
+		setValue( id( AP_PROGRESS ), 0.0f );// the phase; animate it (e.g. BPM sync) to make it move
+	else if( p.mode == AnimMode::Off )
 		setValue( id( AP_PROGRESS ), 1.0f );
 	// The menu is a one-shot loader: back to "Load preset..." so loading a
 	// composition never re-applies a preset over tweaked values.
 	setValue( id( AP_PRESET ), 0.0f );
 	updateVisibility( true );
-}
-
-float TextSource::animatorProgress( int a ) const
-{
-	const float manual = values[ animParam( a, AP_PROGRESS ) ];
-	const float dur    = std::max( 0.25f, values[ animParam( a, AP_DURATION ) ] );
-	switch( (int)values[ animParam( a, AP_DRIVE ) ] )
-	{
-	case DRIVE_SLIDE:
-		return (float)std::clamp( ( currentBeats() - slideStartBeat ) / dur, 0.0, 1.0 );
-	default:
-		return manual;
-	}
 }
 
 AnimatorParams TextSource::animatorParams( int a ) const
@@ -913,9 +924,12 @@ AnimatorParams TextSource::animatorParams( int a ) const
 	ap.unit        = (AnimUnit)std::clamp( (int)v( AP_UNIT ), 0, 2 );
 	ap.order       = (AnimOrder)std::clamp( (int)v( AP_ORDER ), 0, 4 );
 	ap.ease        = (AnimEase)std::clamp( (int)v( AP_EASE ), 0, 3 );
-	ap.progress    = ( ap.mode == AnimMode::Wave || ap.mode == AnimMode::Random ) ? v( AP_PROGRESS ) : animatorProgress( a );
+	ap.progress    = v( AP_PROGRESS );
+	const bool seq = ap.mode == AnimMode::SequenceIn || ap.mode == AnimMode::SequenceOut;
+	const bool slidesOn = csvActive || (int)values[ P_SLIDES ] != SLIDES_OFF;
+	if( seq && slidesOn && values[ P_REPLAY ] > 0.0f )// played by the plugin on every slide change
+		ap.progress = (float)std::clamp( ( currentBeats() - slideStartBeat ) / std::max( 0.05f, values[ P_REPLAY ] ), 0.0, 1.0 );
 	ap.spread      = v( AP_SPREAD );
-	ap.speed       = v( AP_SPEED );
 	ap.offsetX     = v( AP_OFFSET_X );
 	ap.offsetY     = -v( AP_OFFSET_Y );// UI: Y up, like Position Y
 	ap.scale       = v( AP_SCALE ) / 100.0f;
@@ -1019,6 +1033,12 @@ FFResult TextSource::ProcessOpenGL( ProcessOpenGLStruct* pGL )
 	if( face )
 	{
 		const std::string shownText = currentText();
+		if( slideCount != reportedSlideCount )
+		{
+			// The "2 / 5" display depends on the number of slides: let the host re-read it.
+			reportedSlideCount = slideCount;
+			RaiseParamEvent( P_SLIDE, FF_EVENT_FLAG_VALUE );
+		}
 		if( slideIndex != lastSlideShown )
 		{
 			slideStartBeat = currentBeats();
@@ -1050,7 +1070,7 @@ FFResult TextSource::ProcessOpenGL( ProcessOpenGLStruct* pGL )
 		for( int a = 0; a < kNumAnimators; ++a )
 		{
 			const AnimatorParams ap = animatorParams( a );
-			applyAnimator( layout, ap, currentBeats(), glyphStates );
+			applyAnimator( layout, ap, glyphStates );
 			maxScale *= maxAnimatedScale( ap );
 		}
 

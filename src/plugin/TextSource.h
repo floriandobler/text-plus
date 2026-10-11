@@ -26,12 +26,9 @@ enum AnimParam : unsigned int
 	AP_MODE,
 	AP_UNIT,
 	AP_ORDER,
-	AP_DRIVE,
 	AP_PROGRESS,
-	AP_DURATION,
 	AP_SPREAD,
 	AP_EASE,
-	AP_SPEED,
 	AP_OFFSET_X,
 	AP_OFFSET_Y,
 	AP_SCALE,
@@ -51,10 +48,12 @@ enum ParamId : unsigned int
 	P_PIPE_NEWLINE,
 	P_MARKUP,
 	P_TEXT_FILE,
+	P_CSV_HEADER,
 	P_SLIDES,
 	P_SLIDE,// position 0..1, split into equal shares per slide (BPM sync friendly)
 	P_NEXT_SLIDE,
 	P_PREV_SLIDE,
+	P_REPLAY,// beats; > 0 replays the sequence animators on every slide change
 	// Font
 	P_FONT,
 	P_FAMILY,
@@ -167,7 +166,6 @@ private:
 	// Animation
 	void applyPreset( int animator, int preset );
 	AnimatorParams animatorParams( int animator ) const;
-	float animatorProgress( int animator ) const;
 
 	LayoutParams currentLayoutParams( const std::string& text ) const;
 	Style currentStyle() const;
@@ -181,7 +179,8 @@ private:
 	bool hostChanged( unsigned index, float value );
 	std::vector< signed char > visibility;// last visibility sent to the host
 	std::string text, fontText, fontFile, textFile;
-	std::string textReturnBuffer, displayBuffer;
+	// One return buffer per parameter: a host may keep several returned strings at once.
+	std::string textBuffers[ P_COUNT ], displayBuffers[ P_COUNT ];
 	bool live = false;// first frame rendered: value changes now come from the user
 
 	// Font state
@@ -201,6 +200,8 @@ private:
 	int slideCount       = 1;
 	int slideIndex       = 0;// shown slide
 	int lastSlideShown   = -1;
+	int reportedSlideCount = -1;// slide count the host's "2 / 5" display was last refreshed for
+	bool csvActive         = false;
 	double slideStartBeat = 0.0;
 	std::string lastSlidesSource;
 	std::vector< std::string > slides;
