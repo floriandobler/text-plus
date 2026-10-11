@@ -4,6 +4,7 @@
 #include "core/GlyphCache.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -34,7 +35,7 @@ CFFGLPluginInfo PluginInfo( PluginFactory< TextSource >,// create method
 							2,                           // plugin minor
 							FF_SOURCE,
 							"Text source with distance-field outlines, shadows, glow and per-character animation",
-							"Text+ 0.5",
+							"Text+ 0.6",
 							0, nullptr, initialiseLibrary, nullptr );
 
 const char* kGroupText     = "Text";
@@ -290,6 +291,16 @@ void TextSource::defineParameters()
 	text = "Text+";
 	SetParamInfo( P_TEXT, "Text", FF_TYPE_TEXT, text.c_str() );
 	SetParamGroup( P_TEXT, kGroupText );
+	// Resolume's text fields are single-line: further lines get their own fields,
+	// revealed one by one with "+ Line" (hidden fields keep their saved values).
+	for( int i = 0; i < kExtraLines; ++i )
+	{
+		const unsigned id = P_LINE_FIRST + (unsigned)i;
+		SetParamInfo( id, ( "Line " + std::to_string( i + 2 ) ).c_str(), FF_TYPE_TEXT, "" );
+		SetParamGroup( id, kGroupText );
+	}
+	event( P_ADD_LINE, "+ Line", kGroupText );
+	event( P_REMOVE_LINE, "- Line", kGroupText );
 	boolean( P_PIPE_NEWLINE, "| = New Line", kGroupText, true );
 	boolean( P_MARKUP, "Color Tags", kGroupText, true );
 	SetFileParamInfo( P_TEXT_FILE, "Text File", { "txt", "text", "md", "csv", "tsv" }, "" );
@@ -403,6 +414,11 @@ void TextSource::updateVisibility( bool raiseEvent )
 	show( P_BOX_HEIGHT, box );
 	show( P_FIT, box );
 
+	for( int i = 0; i < kExtraLines; ++i )
+		show( P_LINE_FIRST + (unsigned)i, i < shownLines );
+	show( P_ADD_LINE, shownLines < kExtraLines );
+	show( P_REMOVE_LINE, shownLines > 0 );
+
 	const bool slidesOn = csvActive || (int)values[ P_SLIDES ] != SLIDES_OFF;
 	const bool replay   = slidesOn && values[ P_REPLAY ] > 0.0f;
 	show( P_CSV_HEADER, csvActive );
@@ -447,7 +463,8 @@ FFResult TextSource::SetFloatParameter( unsigned int index, float value )
 	// Choices and positions the plugin also changes itself: only a value the host
 	// did not know before is a new user action. Hosts may re-send unchanged
 	// values at any time (e.g. while animating other parameters).
-	const bool changed = hostChanged( index, value );
+	const float previousHost = hostKnown[ index ];
+	const bool changed       = hostChanged( index, value );
 
 	if( index == P_FAMILY || index == P_STYLE )
 	{
@@ -470,6 +487,23 @@ FFResult TextSource::SetFloatParameter( unsigned int index, float value )
 				applyPreset( a, (int)value );
 			return FF_SUCCESS;
 		}
+	if( index == P_ADD_LINE || index == P_REMOVE_LINE )
+	{
+		if( value > 0.5f && values[ index ] <= 0.5f )
+		{
+			if( index == P_ADD_LINE )
+				showLines( shownLines + 1 );
+			else if( shownLines > 0 )
+			{
+				// The removed field is emptied, so it stays hidden after reloading.
+				extraLines[ shownLines - 1 ].clear();
+				RaiseParamEvent( P_LINE_FIRST + (unsigned)( shownLines - 1 ), FF_EVENT_FLAG_VALUE );
+				showLines( shownLines - 1 );
+			}
+		}
+		values[ index ] = value;
+		return FF_SUCCESS;
+	}
 	if( index == P_NEXT_SLIDE || index == P_PREV_SLIDE )
 	{
 		if( value > 0.5f && values[ index ] <= 0.5f )
@@ -477,8 +511,25 @@ FFResult TextSource::SetFloatParameter( unsigned int index, float value )
 		values[ index ] = value;
 		return FF_SUCCESS;
 	}
-	if( index == P_SLIDE && !changed )
-		return FF_SUCCESS;// keep a position set by the Next/Previous buttons
+	if( index == P_SLIDE )
+	{
+		if( !changed )
+			return FF_SUCCESS;// keep a position set by the Next/Previous buttons
+		// Resolume's own - / + buttons next to the slider step by 0.01. A single,
+		// isolated step of about that size means "previous / next slide"; host
+		// animations and dragging send a stream of values and are taken as they are.
+		const double now    = std::chrono::duration< double >( std::chrono::steady_clock::now().time_since_epoch() ).count();
+		const bool isolated = lastSlideHostChange < 0.0 || std::fabs( now - lastSlideHostChange ) > 0.3;
+		lastSlideHostChange = now;
+		const float delta   = value - previousHost;
+		if( isolated && std::isfinite( previousHost ) && std::fabs( delta ) > 0.004f && std::fabs( delta ) < 0.016f && slideCount > 1 )
+		{
+			values[ P_SLIDE ] = previousHost;
+			slideIndex        = slideFromPosition( previousHost, slideCount );
+			stepSlide( delta > 0.0f ? 1 : -1 );
+			return FF_SUCCESS;
+		}
+	}
 
 	values[ index ] = value;
 	updateVisibility( true );
@@ -488,6 +539,14 @@ FFResult TextSource::SetFloatParameter( unsigned int index, float value )
 FFResult TextSource::SetTextParameter( unsigned int index, const char* value )
 {
 	std::string v = value ? value : "";
+	if( index >= P_LINE_FIRST && index <= P_LINE_LAST )
+	{
+		const int i     = (int)( index - P_LINE_FIRST );
+		extraLines[ i ] = v;
+		if( !v.empty() && i + 1 > shownLines )
+			showLines( i + 1 );// a saved composition brings its lines back
+		return FF_SUCCESS;
+	}
 	switch( index )
 	{
 	case P_TEXT:
@@ -534,6 +593,11 @@ char* TextSource::GetTextParameter( unsigned int index )
 	if( index >= P_COUNT )
 		return nullptr;
 	std::string& out = textBuffers[ index ];
+	if( index >= P_LINE_FIRST && index <= P_LINE_LAST )
+	{
+		out = extraLines[ index - P_LINE_FIRST ];
+		return const_cast< char* >( out.c_str() );
+	}
 	switch( index )
 	{
 	case P_TEXT:
@@ -571,6 +635,16 @@ char* TextSource::GetParameterDisplay( unsigned int index )
 	case P_FONT:
 	case P_FONT_FILE:
 	case P_TEXT_FILE:
+		return GetTextParameter( index );
+	case P_LINE_FIRST + 0:
+	case P_LINE_FIRST + 1:
+	case P_LINE_FIRST + 2:
+	case P_LINE_FIRST + 3:
+	case P_LINE_FIRST + 4:
+	case P_LINE_FIRST + 5:
+	case P_LINE_FIRST + 6:
+	case P_LINE_FIRST + 7:
+	case P_LINE_FIRST + 8:
 		return GetTextParameter( index );
 	case P_SIZE:
 	case P_POS_X:
@@ -824,6 +898,12 @@ void TextSource::pollTextFile()
 		FFGLLog::LogToHost( ( "Text+: cannot read text file " + textFile ).c_str() );
 }
 
+void TextSource::showLines( int count )
+{
+	shownLines = std::clamp( count, 0, kExtraLines );
+	updateVisibility( true );
+}
+
 void TextSource::stepSlide( int delta )
 {
 	if( (int)values[ P_SLIDES ] == SLIDES_OFF || slideCount < 1 )
@@ -837,7 +917,13 @@ std::string TextSource::currentText()
 {
 	pollTextFile();
 	const bool fromFile = !textFile.empty() && textFileStamp >= 0;
-	const std::string& source = fromFile ? textFileContent : text;
+	std::string typed   = text;
+	int usedLines       = shownLines;// a freshly added, still empty field adds no blank line
+	while( usedLines > 0 && extraLines[ usedLines - 1 ].empty() )
+		--usedLines;
+	for( int i = 0; i < usedLines; ++i )
+		typed += "\n" + extraLines[ i ];
+	const std::string& source = fromFile ? textFileContent : typed;
 	const bool csv            = fromFile && isCsvPath( textFile );
 	if( csv != csvActive )
 	{

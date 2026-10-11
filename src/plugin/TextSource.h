@@ -45,6 +45,10 @@ enum ParamId : unsigned int
 {
 	// Text
 	P_TEXT,
+	P_LINE_FIRST,                    // "Line 2" .. "Line 10": extra text fields, shown one by one with "+ Line"
+	P_LINE_LAST = P_LINE_FIRST + 8,
+	P_ADD_LINE,
+	P_REMOVE_LINE,
 	P_PIPE_NEWLINE,
 	P_MARKUP,
 	P_TEXT_FILE,
@@ -179,6 +183,12 @@ private:
 	bool hostChanged( unsigned index, float value );
 	std::vector< signed char > visibility;// last visibility sent to the host
 	std::string text, fontText, fontFile, textFile;
+	static constexpr int kExtraLines = P_LINE_LAST - P_LINE_FIRST + 1;
+	std::string extraLines[ kExtraLines ];
+	int shownLines = 0;// extra line fields currently shown
+	void showLines( int count );
+	// Slide +/- detection: Resolume's +/- buttons step a slider by 0.01
+	double lastSlideHostChange = -1.0;
 	// One return buffer per parameter: a host may keep several returned strings at once.
 	std::string textBuffers[ P_COUNT ], displayBuffers[ P_COUNT ];
 	bool live = false;// first frame rendered: value changes now come from the user

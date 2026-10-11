@@ -6,7 +6,7 @@ Schatten und Glow entstehen ohne Blur-Pässe, die Kanten bleiben in jeder Größ
 scharf, und zwei Animatoren bewegen, skalieren, drehen, blenden und färben den
 Text pro Zeichen, Wort oder Zeile.
 
-Stand: Version 0.5. macOS zuerst (Universal Binary), Windows vorbereitet.
+Stand: Version 0.6. macOS zuerst (Universal Binary), Windows vorbereitet.
 
 ## Bauen und installieren (macOS)
 
@@ -33,11 +33,12 @@ kopiere `build-mac/TextPlus.bundle` dorthin.
 | Gruppe | Parameter | Werte |
 | --- | --- | --- |
 | Text | Text | Zeilenumbruch: `\|` (bei „\| = New Line“), `\n` oder echte Umbrüche |
+| Text | + Line, - Line, Line 2 … Line 10 | weitere Textfelder, jedes eine eigene Zeile unter „Text“; „+ Line“ blendet das nächste ein, „- Line“ leert und entfernt das letzte |
 | Text | Color Tags | `{#ff8800}farbig{/}` färbt Textstellen; `{{` für ein echtes `{` |
 | Text | Text File | .txt oder .csv als Textquelle, wird bei Änderung automatisch neu geladen |
 | Text | CSV: Skip First Row | CSV: jede Zeile eine Slide, die Zellen werden ihre Zeilen (z. B. Name, Funktion). Erste Zeile = Kopfzeile. Trennzeichen `;` `,` oder Tab wird erkannt, Excel-Export (Windows-1252) wird umgewandelt |
 | Text | Slides | Off, Each Line, Blocks (`\|\|` oder Leerzeile trennt) |
-| Text | Slide | Position 0–1, gleichmäßig auf alle Slides verteilt (Anzeige „2 / 5“). Mit BPM Sync animiert läuft sie durch alle Slides und beginnt wieder bei der ersten |
+| Text | Slide | Position 0–1, gleichmäßig auf alle Slides verteilt (Anzeige „2 / 5“). Mit BPM Sync animiert läuft sie durch alle Slides und beginnt wieder bei der ersten. Resolumes −/+ neben dem Regler schalten eine ganze Slide weiter (ein einzelner Schritt von 0,01 wird als „vorige/nächste Slide“ erkannt) |
 | Text | Next Slide, Previous Slide | einzeln mappbare Buttons; springen am Ende zurück auf die erste bzw. letzte Slide |
 | Font | Font | `Familie / Stil`, z. B. `Helvetica Neue / Bold`. Tippen geht: `din bold` |
 | Font | Family, Style | Auswahllisten, schreiben ins Feld „Font“ |
@@ -123,7 +124,7 @@ Plugin wie Resolume über `plugMain`, rendert in einem OpenGL-4.1-Core-Kontext
 # jeden Frame alle Werte erneut, "@trace=…" und "@dump=dir" zeigen jeden Frame.
 ```
 
-## Bekannte Grenzen (Version 0.5)
+## Bekannte Grenzen (Version 0.6)
 
 - Resolumes Textfeld für Plugins ist einzeilig: Zeilen per `|` trennen oder eine
   Text-Datei verwenden.
@@ -133,7 +134,8 @@ Plugin wie Resolume über `plugMain`, rendert in einem OpenGL-4.1-Core-Kontext
 - Kein Font-Fallback: Zeichen, die in der Schrift fehlen, erscheinen als .notdef.
 - Neue Glyphen erscheinen einen Frame später (Erzeugung im Hintergrund).
 - Kompositionen mit Text+ 0.2/0.3: Slides und Animatoren neu einstellen (Parameter geändert).
-- Resolume entfernt Zeilenumbrüche beim Einfügen ins Text-Feld: `|` oder eine Datei verwenden.
+- Resolume entfernt Zeilenumbrüche beim Einfügen ins Text-Feld: Zeilenfelder („+ Line“), `|` oder eine Datei verwenden.
+- Resolume zeigt die internen Parameternamen („A1 Mode“), keine Anzeigenamen.
 - Kurzer Hänger beim Reinziehen oder Kopieren eines Clips: tritt bei Resolumes
   eigenen Text-Sources genauso auf, liegt also bei Resolume.
 - Windows: Code ist vorbereitet (Font-Ordner-Scan), Build noch nicht eingerichtet.

@@ -37,5 +37,10 @@ $H $P out/csv_slide2.png 960 300 "Text File=tests/data/lower_thirds.csv" "Font=I
 grep -q "(2 / 2)" out/csv.txt || { echo "FEHLER: CSV-Slides"; exit 1; }
 # Wave: Progress is the phase
 $H $P out/wave_phase.png 960 240 "Text=Wave Phase" "Font=Inter / Black" "Size=110" "+A1 Preset=9" "++A1 Progress=0.25"
+# Extra line fields ("Line 2", "Line 3") add lines below "Text"
+$H $P out/line_fields.png 960 400 "Text=Erste Zeile" "Line 2=Zweite Zeile" "Line 3=Dritte" "Size=90"
+# Resolume's +/- buttons step the Slide slider by 0.01: an isolated step = next / previous slide
+$H $P out/slide_stepper.png 640 200 "Text=A|B|C|D" "Slides=1" "Slide=0.875" "+Slide=0.885" @deferAt=90 @frames=100 @dt=0.016 @print=Slide | tee out/slide_stepper.txt
+grep -q "(1 / 4)" out/slide_stepper.txt || { echo "FEHLER: Slide-Stepper"; exit 1; }
 $H $P out/menus.png 320 180 "Font=Inter / Regular" "+Style=3" @frames=16
 echo "Bilder in out/"

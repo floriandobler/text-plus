@@ -159,6 +159,7 @@ int main( int argc, char** argv )
 	// "@resend=stale|sync": like a host that sends all its parameter values every frame.
 	// stale = the host ignores value events from the plugin, sync = it reads them back first.
 	std::string resend;
+	int deferAt = 8;// frame at which "+Param=value" is applied ("@deferAt=N"); "++" one frame later
 	std::vector< std::string > resendOnly;// "@resend=stale:A1 Preset;A1 Mode" limits the re-sent parameters
 	// "@ramp=Param:from:to": animates a parameter linearly over all frames (host-side animation)
 	std::string rampName;
@@ -214,12 +215,14 @@ int main( int argc, char** argv )
 	for( int a = 5; a < argc; ++a )
 	{
 		std::string arg = argv[ a ];
-		if( arg.size() > 1 && arg[ 0 ] == '+' && arg[ 1 ] == '+' )
+		// A parameter whose own name starts with '+' ("+ Line") is set directly.
+		const bool literalPlus = !arg.empty() && arg[ 0 ] == '+' && byName.count( arg.substr( 0, arg.find( '=' ) ) );
+		if( !literalPlus && arg.size() > 1 && arg[ 0 ] == '+' && arg[ 1 ] == '+' )
 		{
 			deferred2.push_back( arg.substr( 2 ) );
 			continue;
 		}
-		if( !arg.empty() && arg[ 0 ] == '+' )
+		if( !literalPlus && !arg.empty() && arg[ 0 ] == '+' )
 		{
 			deferred.push_back( arg.substr( 1 ) );
 			continue;
@@ -230,6 +233,11 @@ int main( int argc, char** argv )
 		std::string key = arg.substr( 0, eq ), val = arg.substr( eq + 1 );
 		if( key == "@instances" )
 			continue;
+		if( key == "@deferAt" )
+		{
+			deferAt = std::atoi( val.c_str() );
+			continue;
+		}
 		if( key == "@resend" )
 		{
 			size_t colon = val.find( ':' );
@@ -389,14 +397,14 @@ int main( int argc, char** argv )
 		if( err != GL_NO_ERROR )
 			std::fprintf( stderr, "GL error 0x%x in frame %d\n", err, f );
 
-		if( f == 8 && !deferred.empty() )
+		if( f == deferAt && !deferred.empty() )
 		{
 			for( const std::string& d : deferred )
 				setParam( d.substr( 0, d.find( '=' ) ), d.substr( d.find( '=' ) + 1 ) );
 			deferred.clear();
 			stable = 0;
 		}
-		if( f == 9 && !deferred2.empty() )
+		if( f == deferAt + 1 && !deferred2.empty() )
 		{
 			for( const std::string& d : deferred2 )
 				setParam( d.substr( 0, d.find( '=' ) ), d.substr( d.find( '=' ) + 1 ) );
