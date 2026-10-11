@@ -1,148 +1,156 @@
+<p align="center"><img src="docs/images/hero.png" alt="Text+ — text source for Resolume" width="100%"></p>
+
 # Text+
 
-Text-Source für Resolume Arena/Avenue 7 als FFGL-Plugin. Rendert Text über ein
-Distanzfeld: Outlines wachsen nur nach außen und fressen nie in die Buchstaben,
-Schatten und Glow entstehen ohne Blur-Pässe, die Kanten bleiben in jeder Größe
-scharf, und zwei Animatoren bewegen, skalieren, drehen, blenden und färben den
-Text pro Zeichen, Wort oder Zeile.
+**A text source for Resolume Arena and Avenue that does what the built-in Text Block and Text Animator can't.**
 
-Stand: Version 0.6. macOS zuerst (Universal Binary), Windows vorbereitet.
+Text+ renders type through a signed distance field. Every effect — outlines, glow, shadow — is computed from the exact distance to the letter's edge. So an outline **grows outward only** and never eats into the letters, thick outlines of neighbouring letters **merge into one clean contour**, and everything stays **crisp at any size**. On top of that come per-character animation, slides from text or CSV files, and individually styled lines for lower thirds.
 
-## Bauen und installieren (macOS)
+[**Download for macOS**](https://github.com/floriandobler/text-plus/releases/latest) · Resolume Arena / Avenue 7 · FFGL 2 · Apple Silicon + Intel · MIT licence
 
-Voraussetzungen: Xcode Command Line Tools und CMake 3.20 oder neuer.
+---
+
+## Why
+
+Resolume's own text sources grow outlines in both directions, so a thick outline eats the letter ([forum thread](https://resolume.com/forum/viewtopic.php?t=22864)). Overlapping letters get visible seams, alignment and anchors behave unexpectedly, and animation is limited to a few presets. Text+ is built around a different rendering model to fix exactly that:
+
+<p align="center"><img src="docs/images/outline_outside.png" alt="Outlines from 0 to 72 px: the letters stay intact" width="100%"></p>
+
+## Features
+
+**Typography**
+- Any installed font (Family / Style menus, or type a name such as `din bold`), or load a `.ttf` / `.otf` / `.ttc` file directly. Variable fonts appear with their named styles.
+- Real shaping with HarfBuzz: kerning, ligatures, accents, non-Latin scripts.
+- Tracking, leading, left / centre / right / justified alignment, anchor independent of alignment, wrapping in a box with auto-fit (shrink to box, fit width).
+- The chosen font is stored by name, so compositions open with the right font even after fonts were installed or removed.
+
+**Look**
+- Fill: solid, gradient across the block, or gradient across the characters. Fill alpha 0 gives hollow text.
+- Two outline bands (outside, centred or inside), round or sharp corners.
+- Shadow with distance, angle, softness and spread; glow with radius and strength — no blur passes, no halo artefacts.
+- Inline colours: `{#ff4d6d}word{/}`.
+
+**Line styles** — perfect for lower thirds
+- *Line 2* and *Line 3+* can each have their own weight or font, size, colour, tracking and spacing. Outlines, glow and animation stay shared, so contours still merge.
+- Works the same for typed lines, `|`-separated lines, text files and CSV columns.
+
+<p align="center"><img src="docs/images/lower_third.png" alt="Lower third with three styled lines" width="100%"></p>
+
+**Content**
+- Resolume's text fields are single-line, so Text+ adds up to nine more fields (*+ Line*), treats `|` as a line break, and reads text files that reload as soon as you save them.
+- **Slides**: one line per slide, or blocks separated by an empty line or `||`. The *Slide* slider is a 0–1 position split evenly across all slides — animate it with Resolume's BPM sync and it steps through every slide and wraps around. *Next / Previous* buttons (and Resolume's −/+ next to the slider) step one slide.
+- **CSV**: every row is a slide, every cell a line. `Name;Role` from a spreadsheet becomes a set of styled lower thirds. Delimiter (`;` `,` tab) and encoding (UTF-8 or Excel's Windows-1252) are detected.
+
+**Animation** — two stackable animators
+- Modes: *Sequence In / Out* (characters, words or lines one after another), *Wave*, *Random*, *Constant*.
+- Each animator moves, scales, rotates, fades and tints; ease *Linear / Smooth / Ease Out / Overshoot*; order *Forward, Reverse, From Center, From Edges, Random*.
+- No hidden clock: everything is driven by the *Progress* slider, so you animate it the Resolume way (BPM sync, timeline, MIDI, OSC) and can always scrub. *Replay on Slide Change* plays sequences automatically when the slide changes.
+- Fading characters leave merged outlines smoothly — no holes, no popping.
+- Presets: Typewriter, Fade In, Rise In, Drop In, Pop In, Spin In, Words Slide In, Fade Out, Wave, Jitter, Color Sweep.
+
+<table>
+<tr>
+<td><img src="docs/images/anim_fade_merge.gif" alt="Fade in with merged outlines"></td>
+<td><img src="docs/images/anim_rise.gif" alt="Rise in"></td>
+</tr>
+<tr>
+<td><img src="docs/images/anim_wave.gif" alt="Wave with colour"></td>
+<td><img src="docs/images/anim_typewriter.gif" alt="Typewriter"></td>
+</tr>
+</table>
+
+<p align="center"><img src="docs/images/hollow_gradient.png" alt="Hollow text with shadow, gradient fill with glow" width="100%"></p>
+<p align="center"><img src="docs/images/color_tags.png" alt="Inline colour tags" width="100%"></p>
+
+**Performance**
+- Glyphs are generated once in background threads (MSDF + true distance, 16-bit) and cached; a frame is a handful of draw calls regardless of text length, and only the text's bounding box is shaded.
+- Shaders and scratch buffers are shared by all instances.
+- Tested in Arena 7.23 on a Mac: 20 instances with glow, movement and opacity animation keep a 60 fps composition at 59–60 fps.
+
+## Installation (macOS)
+
+1. Download `TextPlus-<version>-macOS.zip` from the [latest release](https://github.com/floriandobler/text-plus/releases/latest) and unzip it.
+2. Copy `TextPlus.bundle` to `~/Documents/Resolume Arena/Extra Effects` (or `Resolume Avenue`). If you use a different plugin folder, check *Preferences → Video → FFGL*.
+3. The bundle is not notarised by Apple, so remove the download quarantine once in Terminal:
+   ```sh
+   xattr -dr com.apple.quarantine ~/Documents/"Resolume Arena"/"Extra Effects"/TextPlus.bundle
+   ```
+4. Restart Resolume. **Text+** is listed under *Sources*, right next to Resolume's own text sources.
+
+Requires macOS 11 or later and Resolume Arena / Avenue 7 (developed and tested with 7.23). Windows support is prepared in the code but not built or tested yet.
+
+## Quick start
+
+| You want | Do this |
+| --- | --- |
+| A big outlined title | *Size* 200, *Outline Width* 30, *Outline 2 Width* 12, *Glow Radius* 40 |
+| A lower third | *Text* = name, *+ Line*, *Text 2* = role; *Line 2 → L2 Style* = Own, *L2 Size* 45 %, *L2 Color* (alpha 1); *Align* Left |
+| Lower thirds from a spreadsheet | Export `Name;Role` as CSV, choose it as *Text File*, style *Line 2*; step with *Next Slide* or BPM-sync *Slide* |
+| Song lyrics on the beat | *Slides* = Each Line, put one line per row in a text file, BPM-sync *Slide* over the song section |
+| Typewriter on every slide | *A1 Preset* = Typewriter, *Replay on Slide Change* = 2 (beats) |
+| A looping wave | *A1 Preset* = Wave, animate *A1 Progress* 0 → 1 with BPM sync (loop) |
+
+## Parameters
+
+Resolume shows the internal parameter names; groups appear in this order.
+
+| Group | Parameters |
+| --- | --- |
+| **Text** | *Text*, *Text 2 … Text 10* (revealed with *+ Line* / *− Line*), *Text File* (.txt, .md, .csv, .tsv), *Slides* (Off / Each Line / Blocks), *Slide* (0–1), *Next Slide*, *Previous Slide*, *Replay on Slide Change* (beats, 0 = off) |
+| **Font** | *Family*, *Style*, *Size* (px), *Font* (stored name, typeable), *Font File* |
+| **Line 2**, **Line 3+** | *Style* (Same as above / Own), *Weight* (styles of the main family), *Font* (empty = main font, `Bold` = a style of the main family, `Family / Style` = another font), *Size* (% of main size), *Color* (alpha = how strongly it replaces the fill), *Tracking* (added to the main tracking), *Spacing* (extra space above, % of main size) |
+| **Layout** | *Position X / Y* (px from the centre, Y up), *Rotation*, *Align*, *Anchor H*, *Anchor V*, *Wrap* (Off / Box), *Box Width*, *Box Height*, *Auto Fit*, *Tracking* (1/1000 em), *Leading* (%) |
+| **Fill** | *Fill Mode* (Solid / Gradient Block / Gradient Characters), *Fill Color*, *Fill Color 2*, *Gradient Angle* |
+| **Outline** | *Outline Width*, *Outline Position* (Outside / Center / Inside), *Outline Corners* (Round / Sharp), *Outline Color*, *Outline 2 Width*, *Outline 2 Color* |
+| **Shadow** | *Color*, *Distance* (0 = off), *Angle*, *Softness*, *Spread* |
+| **Glow** | *Color*, *Radius* (0 = off), *Strength* |
+| **Animator 1**, **Animator 2** | *Preset*, *Mode*, *Unit* (Character / Word / Line), *Order*, *Progress*, *Spread*, *Ease*, *Offset X / Y*, *Scale*, *Rotation*, *Opacity*, *Color* (alpha = amount) |
+| **Options** | *\| = New Line*, *Color Tags*, *CSV: Skip First Row*, *Kerning*, *Ligatures*, *Edge Softness* |
+
+**How an animator works.** It describes where a unit is when it is "away": offset, scale, rotation, opacity, colour. *Sequence In* brings units from away to rest one after another as *Progress* goes 0 → 1; *Spread* is how many units move at once (0 = hard typewriter steps). For *Wave*, *Progress* is the phase (0 → 1 is one cycle, loops seamlessly) and *Spread* the wavelength; for *Random*, *Progress* runs through a loop of *Spread* random states. Two animators add up.
+
+## How it works
+
+```
+src/core/      platform-neutral text engine (no FFGL, no OpenGL)
+  FontDatabase   font discovery (CoreText on macOS) + FreeType scan, cached on disk
+  TextLayout     HarfBuzz shaping, line styles, wrapping, alignment, anchors, auto-fit
+  GlyphCache     MTSDF generation with msdfgen in worker threads
+  Animator       per-glyph state as a pure function of the parameters
+  Csv, Utf8      CSV parsing, encodings, inline colour tags
+src/render/    OpenGL 4.1 core
+  GlyphAtlas     16-bit float atlas, grows on demand
+  TextRenderer   field passes: distance field of the union of all glyphs (depth test keeps
+                 the nearest); when opacities differ, the 4 nearest glyphs per pixel
+                 (depth peeling). Composite: fill, outlines, shadow, glow, with opacity
+                 integrated as a threshold so fading glyphs leave merged outlines smoothly.
+src/plugin/    FFGL adapter: parameters, presets, slides, dynamic menus, host quirks
+tests/         unit tests, headless FFGL host (Linux/EGL), randomised parameter test
+```
+
+## Building from source
+
+macOS (Xcode Command Line Tools, CMake ≥ 3.20):
 
 ```sh
-xcode-select --install      # falls noch nicht vorhanden
-brew install cmake
 ./scripts/build_mac.sh --install
 ```
 
-Das Skript lädt beim ersten Lauf FFGL SDK, FreeType, HarfBuzz und msdfgen per git
-(ein paar Minuten), baut `TextPlus.bundle` für arm64 und x86_64, signiert ad hoc
-und kopiert es nach `~/Documents/Resolume Arena/Extra Effects`. Ein altes
-`KonturText.bundle` (Version 0.1) entfernt es dabei, denn beide tragen dieselbe
-Plugin-ID. Danach Resolume neu starten; das Plugin heißt **Text+** und liegt bei
-den Sources direkt neben Text Animator und Text Block.
+The script fetches the dependencies, builds a universal `TextPlus.bundle`, signs it ad hoc and copies it to Resolume's *Extra Effects* folder.
 
-Nutzt du einen anderen Plugin-Ordner (Resolume → Preferences → Video → FFGL),
-kopiere `build-mac/TextPlus.bundle` dorthin.
+Linux (development only): `./scripts/run_tests_linux.sh` builds the core, the plugin and a headless test host, runs the unit tests and renders test scenes with Mesa in an OpenGL 4.1 core context — checking for GL state leaks, host quirks and random parameter combinations. `tools/make_showcase.py` renders the images in this README.
 
-## Parameter
+## Roadmap
 
-| Gruppe | Parameter | Werte |
-| --- | --- | --- |
-| Text | Text | Zeilenumbruch: `\|` (bei „\| = New Line“), `\n` oder echte Umbrüche |
-| Text | + Line, - Line, Line 2 … Line 10 | weitere Textfelder, jedes eine eigene Zeile unter „Text“; „+ Line“ blendet das nächste ein, „- Line“ leert und entfernt das letzte |
-| Text | Color Tags | `{#ff8800}farbig{/}` färbt Textstellen; `{{` für ein echtes `{` |
-| Text | Text File | .txt oder .csv als Textquelle, wird bei Änderung automatisch neu geladen |
-| Text | CSV: Skip First Row | CSV: jede Zeile eine Slide, die Zellen werden ihre Zeilen (z. B. Name, Funktion). Erste Zeile = Kopfzeile. Trennzeichen `;` `,` oder Tab wird erkannt, Excel-Export (Windows-1252) wird umgewandelt |
-| Text | Slides | Off, Each Line, Blocks (`\|\|` oder Leerzeile trennt) |
-| Text | Slide | Position 0–1, gleichmäßig auf alle Slides verteilt (Anzeige „2 / 5“). Mit BPM Sync animiert läuft sie durch alle Slides und beginnt wieder bei der ersten. Resolumes −/+ neben dem Regler schalten eine ganze Slide weiter (ein einzelner Schritt von 0,01 wird als „vorige/nächste Slide“ erkannt) |
-| Text | Next Slide, Previous Slide | einzeln mappbare Buttons; springen am Ende zurück auf die erste bzw. letzte Slide |
-| Font | Font | `Familie / Stil`, z. B. `Helvetica Neue / Bold`. Tippen geht: `din bold` |
-| Font | Family, Style | Auswahllisten, schreiben ins Feld „Font“ |
-| Font | Font File | .ttf/.otf/.ttc direkt laden |
-| Font | Size | px |
-| Layout | Position X / Y, Rotation | px ab Bildmitte (Y nach oben), Grad |
-| Layout | Align, Anchor H, Anchor V | Ausrichtung und Ankerpunkt, getrennt einstellbar |
-| Layout | Box Width / Height, Auto Fit | Umbruch in einer Box, Verkleinern oder Einpassen |
-| Layout | Tracking, Leading, Kerning, Ligatures | 1/1000 em, % der Größe |
-| Fill | Fill Mode | Solid, Gradient (Block), Gradient (Characters) |
-| Fill | Fill Color, Fill Color 2, Gradient Angle | Alpha 0 = hohle Schrift |
-| Outline | Width, Position, Corners, Color | px; Outside/Center/Inside; Round/Sharp |
-| Outline 2 | Width, Color | zweite Kontur außen um die erste |
-| Shadow | Color, Distance, Angle, Softness, Spread | Distance 0 = aus |
-| Glow | Color, Radius, Strength | Radius 0 = aus |
-| Animator 1, 2 | Preset | lädt Werte, springt danach zurück auf „Load preset…“ |
-| Animator 1, 2 | Mode | Off, Sequence In, Sequence Out, Wave, Random, Constant |
-| Animator 1, 2 | Unit, Order | Character/Word/Line; Forward, Reverse, From Center, From Edges, Random |
-| Text | Replay on Slide Change | Beats; > 0 spielt Sequence-Animatoren bei jedem Slide-Wechsel neu ab (ersetzt dann deren Progress) |
-| Animator 1, 2 | Progress | Sequence: Position; Wave: Phase (0–1 = eine Welle); Random: Position im Zufalls-Loop; Constant: Stärke. Bewegung entsteht durch Animieren in Resolume (BPM Sync, Timeline) |
-| Animator 1, 2 | Spread, Ease | gleichzeitig bewegte Einheiten (Sequence), Wellenlänge (Wave), Anzahl Zufallszustände (Random); Linear/Smooth/Ease Out/Overshoot |
-| Animator 1, 2 | Offset X/Y, Scale, Rotation, Opacity, Color | der „Weg“-Zustand; Color-Alpha = Stärke der Färbung |
-| Quality | Edge Softness | Anti-Aliasing-Breite in px |
+- **Text+ Fill**: an effect variant that fills the text with the video of the clip it sits on (or uses the text as a window into it).
+- Distance-field styles: bevel & emboss, inner glow, inner shadow.
+- Windows build.
+- Font fallback for missing characters, bidirectional text.
 
-Der Animator beschreibt, wo eine Einheit „weg“ ist (versetzt, verkleinert,
-gedreht, unsichtbar, eingefärbt). Sequence In bringt die Einheiten mit Progress
-0 → 1 nacheinander in die Ruhelage, Sequence Out umgekehrt. Bei Wave ist
-Progress die Phase, bei Random die Position in einer Schleife von
-Zufallszuständen; beide laufen nahtlos, wenn Progress per BPM Sync von 0 bis 1
-loopt. Constant wendet den Zustand mit der Stärke Progress auf alle an. Zwei
-Animatoren addieren sich. Im Plugin läuft keine eigene Uhr: Bewegung entsteht
-durch Resolumes Parameter-Animation (Ausnahme: Replay on Slide Change).
+Ideas and bug reports are welcome in the [issues](https://github.com/floriandobler/text-plus/issues).
 
-Die Schrift wird als Text gespeichert, nicht als Listen-Index. Kompositionen laden
-deshalb auch dann die richtige Schrift, wenn inzwischen Fonts installiert oder
-entfernt wurden. Fehlt eine Schrift, bleibt ihr Name erhalten und das Plugin nutzt
-vorübergehend die Standardschrift.
+## Licence
 
-## Architektur
+Text+ is released under the [MIT licence](LICENSE). It links statically against the FFGL SDK (BSD-style), FreeType (FreeType Licence), HarfBuzz (MIT) and msdfgen (MIT) — see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). Resolume, Arena and Avenue are trademarks of Resolume B.V.; Text+ is an independent project.
 
-```
-src/core/     plattformneutraler Kern, ohne FFGL und OpenGL
-  FontDatabase   Font-Suche (CoreText-URLs auf dem Mac) + FreeType-Scan, Cache auf Platte
-  FontFace       Datei-Bytes + HarfBuzz-Font + Metriken
-  TextLayout     Farb-Tags, HarfBuzz-Shaping, Umbruch, Ausrichtung, Anker, Auto-Fit
-  GlyphCache     MTSDF-Erzeugung mit msdfgen in Worker-Threads, sichtbare Glyphen zuerst
-  Animator       Glyph-Zustände als reine Funktion von Progress/Beat
-src/render/   OpenGL 4.1 Core
-  GlyphAtlas     RGBA16F-Atlas pro Instanz, wächst bis 4096²
-  TextRenderer   Feld-Pässe: Distanzfeld der Vereinigung (Depth = min. Abstand); bei
-                 unterschiedlicher Deckkraft die 4 nächsten Glyphen pro Pixel (Depth Peeling)
-                 Composite: Fill, 2 Outlines, Schatten, Glow; Deckkraft als Schwellen-
-                 Integral, damit ausblendende Zeichen nahtlos aus verschmolzenen Konturen
-                 verschwinden; nur in der Text-Bounding-Box
-src/plugin/   FFGL-Adapter (Parameter, Presets, Slides, Events, dynamische Listen)
-tests/        Unit-Tests + Headless-FFGL-Host (Linux/EGL)
-```
-
-Shader und Zwischenpuffer gibt es einmal pro GL-Kontext, alle Instanzen teilen sie.
-Die Ausgabe ist straight alpha, so wie Resolume Sources verrechnet.
-
-Menüs, die etwas auslösen (Presets, Family, Style), und die Slide-Position
-reagieren nur auf Werte, die sich gegenüber dem zuletzt vom Host gesendeten
-Wert geändert haben. Schickt Resolume unveränderte Werte erneut, wird nichts
-noch einmal angewendet.
-
-Ausführlich: Dokument „Resolume Text-Plugin: Recherche & Architektur“.
-
-## Tests ohne Resolume (Linux)
-
-`./scripts/run_tests_linux.sh` baut Kern, Plugin und Test-Host, führt die
-Unit-Tests aus und rendert Beispielbilder nach `out/`. Der Test-Host lädt das
-Plugin wie Resolume über `plugMain`, rendert in einem OpenGL-4.1-Core-Kontext
-(Mesa, ohne GPU) und meldet, ob das Plugin GL-Zustand verändert zurücklässt.
-
-```sh
-./build/ffgl_test_host build/TextPlus.so --list                 # Parameterliste
-./build/ffgl_test_host build/TextPlus.so out/x.png 1280 720 \
-    "Text=Hallo" "Outline Width=20" "Glow Radius=40" @bg=0.9,0.3,0.1
-# "+Name=Wert" setzt einen Wert erst nach einigen Frames (wie eine Nutzeraktion),
-# "@dt=0.0166 @frames=90" lässt die Zeit laufen, "@print=A1 Mode" gibt Werte aus,
-# "@ramp=Slide:0:1" animiert einen Parameter, "@resend=stale" schickt wie ein Host
-# jeden Frame alle Werte erneut, "@trace=…" und "@dump=dir" zeigen jeden Frame.
-```
-
-## Bekannte Grenzen (Version 0.6)
-
-- Resolumes Textfeld für Plugins ist einzeilig: Zeilen per `|` trennen oder eine
-  Text-Datei verwenden.
-- Effekte reichen bis 1 em um die Glyphe (Distanzfeld-Spread). Darüber hinaus
-  werden Outline, Glow und Schatten begrenzt.
-- Rechts-nach-links-Text wird geshaped, aber nicht bidirektional umgebrochen.
-- Kein Font-Fallback: Zeichen, die in der Schrift fehlen, erscheinen als .notdef.
-- Neue Glyphen erscheinen einen Frame später (Erzeugung im Hintergrund).
-- Kompositionen mit Text+ 0.2/0.3: Slides und Animatoren neu einstellen (Parameter geändert).
-- Resolume entfernt Zeilenumbrüche beim Einfügen ins Text-Feld: Zeilenfelder („+ Line“), `|` oder eine Datei verwenden.
-- Resolume zeigt die internen Parameternamen („A1 Mode“), keine Anzeigenamen.
-- Kurzer Hänger beim Reinziehen oder Kopieren eines Clips: tritt bei Resolumes
-  eigenen Text-Sources genauso auf, liegt also bei Resolume.
-- Windows: Code ist vorbereitet (Font-Ordner-Scan), Build noch nicht eingerichtet.
-
-## Lizenzen der Abhängigkeiten
-
-FFGL SDK (Resolume, BSD-Stil), FreeType (FreeType License), HarfBuzz (MIT),
-msdfgen (MIT). Alle statisch gelinkt.
-
-Portions of this software are copyright © The FreeType Project (www.freetype.org). All rights reserved.
+The fonts in the example images are Inter, Anton, Bebas Neue, Archivo Black, Space Grotesk and Righteous (SIL Open Font Licence); they are not part of Text+.

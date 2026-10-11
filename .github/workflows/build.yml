@@ -1,0 +1,89 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  linux-tests:
+    name: Tests (Linux, Mesa)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build libglew-dev libegl-dev libegl-mesa0 libgl1-mesa-dri \
+            fonts-dejavu-core fonts-cantarell fonts-inter python3
+      - name: Build and test
+        run: ./scripts/run_tests_linux.sh
+
+  macos:
+    name: macOS universal bundle
+    runs-on: macos-14
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build
+        run: |
+          cmake -S . -B build-mac -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" -DTEXTPLUS_BUILD_TESTS=ON
+          cmake --build build-mac --config Release --parallel
+          codesign --force --sign - build-mac/TextPlus.bundle
+          lipo -info build-mac/TextPlus.bundle/Contents/MacOS/TextPlus
+          codesign --verify --verbose build-mac/TextPlus.bundle
+
+      - name: Smoke test (loads the bundle like Resolume, renders with Apple's OpenGL 4.1)
+        run: |
+          mkdir -p smoke
+          ./build-mac/ffgl_test_host build-mac/TextPlus.bundle --list | head -n 30
+          ./build-mac/ffgl_test_host build-mac/TextPlus.bundle smoke/outline_glow.png 1280 720 \
+            "Text=Text+ on macOS" "Text 2=CoreText fonts, Apple GL" "L2 Style=1" "L2 Size=40" "L2 Color=0.1" "L2 Color_Alpha=1" \
+            "Size=140" "Outline Width=18" "Outline 2 Width=8" "Glow Radius=40" "Shadow Distance=12" @expectInk=1
+          ./build-mac/ffgl_test_host build-mac/TextPlus.bundle smoke/fade_layers.png 1280 360 \
+            "Text=merged outlines" "Size=120" "Outline Width=16" "A1 Mode=1" "A1 Opacity=0" "A1 Spread=2" "A1 Progress=0.6" @expectInk=1
+          ./build-mac/ffgl_test_host build-mac/TextPlus.bundle smoke/csv.png 960 300 \
+            "Text File=tests/data/lower_thirds.csv" "Slide=0.9" "L2 Style=1" "L2 Size=50" @expectInk=1 @print=Slide
+          python3 tests/fuzz_params.py build-mac/ffgl_test_host build-mac/TextPlus.bundle 15
+
+      - name: Package
+        run: |
+          VERSION=$(sed -nE 's/^project\(TextPlus VERSION ([0-9.]+).*/\1/p' CMakeLists.txt)
+          mkdir -p dist/TextPlus
+          cp -R build-mac/TextPlus.bundle dist/TextPlus/
+          cp LICENSE THIRD_PARTY_NOTICES.md dist/TextPlus/
+          cat > dist/TextPlus/INSTALL.txt <<TXT
+          Text+ ${VERSION} for Resolume Arena / Avenue 7 (macOS 11+, Apple Silicon and Intel)
+
+          1. Copy TextPlus.bundle to ~/Documents/Resolume Arena/Extra Effects
+             (or Resolume Avenue; see Preferences > Video > FFGL for your plugin folder).
+          2. The bundle is not notarised. Remove the download quarantine once in Terminal:
+             xattr -dr com.apple.quarantine ~/Documents/"Resolume Arena"/"Extra Effects"/TextPlus.bundle
+          3. Restart Resolume. Text+ is listed under Sources.
+
+          Documentation: https://github.com/${{ github.repository }}
+          TXT
+          (cd dist && ditto -c -k --keepParent TextPlus "TextPlus-${VERSION}-macOS.zip")
+          echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: TextPlus-macOS
+          path: dist/TextPlus-*-macOS.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: smoke-renders
+          path: smoke/*.png
+
+      - name: Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Text+ ${{ env.VERSION }}
+          body_path: docs/releases/v${{ env.VERSION }}.md
+          files: dist/TextPlus-*-macOS.zip

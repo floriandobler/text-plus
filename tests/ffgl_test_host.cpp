@@ -1,16 +1,23 @@
-// Headless FFGL host for Linux (EGL + Mesa). Loads the plugin exactly like a
-// host does (dlopen + plugMain), renders frames into an FBO and writes a PNG.
+// Headless FFGL host for Linux (EGL + Mesa) and macOS (CGL). Loads the plugin
+// exactly like a host does (dlopen + plugMain), renders frames into an FBO and
+// writes a PNG.
 //
-//   ffgl_test_host <plugin.so> --list
+//   ffgl_test_host <plugin.so | TextPlus.bundle> --list
 //   ffgl_test_host <plugin.so> <out.png> <width> <height> [Param=value ...] [@frames=N] [@time=seconds] [@bg=checker|black|white]
 //
 // Param names are the plugin's parameter names ("Outline Width=24").
 // Option parameters take the element index, text parameters the string.
 // It also checks that the plugin leaves the GL state the way it found it.
 
+#if defined( __APPLE__ )
+#define GL_SILENCE_DEPRECATION
+#include <OpenGL/OpenGL.h>
+#include <OpenGL/gl3.h>
+#else
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
 #include <GL/glew.h>
+#endif
 #include <dlfcn.h>
 
 #include <chrono>
@@ -43,6 +50,30 @@ static FFMixed ptr( void* p )
 	return m;
 }
 
+#if defined( __APPLE__ )
+static bool createContext()
+{
+	// Same profile as Resolume: OpenGL 4.1 core. Fall back to Apple's software
+	// renderer where there is no GPU (CI machines).
+	CGLPixelFormatAttribute hw[] = { kCGLPFAOpenGLProfile, (CGLPixelFormatAttribute)kCGLOGLPVersion_GL4_Core, kCGLPFAAllowOfflineRenderers,
+									 (CGLPixelFormatAttribute)0 };
+	CGLPixelFormatAttribute sw[] = { kCGLPFAOpenGLProfile, (CGLPixelFormatAttribute)kCGLOGLPVersion_GL4_Core, kCGLPFARendererID,
+									 (CGLPixelFormatAttribute)kCGLRendererGenericFloatID, (CGLPixelFormatAttribute)0 };
+	CGLPixelFormatObj pf = nullptr;
+	GLint n              = 0;
+	if( CGLChoosePixelFormat( hw, &pf, &n ) != kCGLNoError || !pf )
+		if( CGLChoosePixelFormat( sw, &pf, &n ) != kCGLNoError || !pf )
+			return false;
+	CGLContextObj ctx = nullptr;
+	if( CGLCreateContext( pf, nullptr, &ctx ) != kCGLNoError || !ctx )
+		return false;
+	CGLDestroyPixelFormat( pf );
+	if( CGLSetCurrentContext( ctx ) != kCGLNoError )
+		return false;
+	std::printf( "GL: %s / %s\n", (const char*)glGetString( GL_RENDERER ), (const char*)glGetString( GL_VERSION ) );
+	return true;
+}
+#else
 static bool createContext()
 {
 	auto getPlatformDisplay = (PFNEGLGETPLATFORMDISPLAYEXTPROC)eglGetProcAddress( "eglGetPlatformDisplayEXT" );
@@ -64,6 +95,7 @@ static bool createContext()
 	glGetError();
 	return glGenFramebuffers != nullptr;
 }
+#endif
 
 struct GLSnapshot
 {
@@ -99,7 +131,10 @@ int main( int argc, char** argv )
 		std::fprintf( stderr, "could not create an OpenGL 4.1 core context\n" );
 		return 1;
 	}
-	void* lib = dlopen( argv[ 1 ], RTLD_NOW | RTLD_LOCAL );
+	std::string pluginPath = argv[ 1 ];
+	if( pluginPath.size() > 7 && pluginPath.compare( pluginPath.size() - 7, 7, ".bundle" ) == 0 )
+		pluginPath += "/Contents/MacOS/TextPlus";// macOS bundle: load its executable
+	void* lib = dlopen( pluginPath.c_str(), RTLD_NOW | RTLD_LOCAL );
 	if( !lib )
 	{
 		std::fprintf( stderr, "dlopen: %s\n", dlerror() );
@@ -158,6 +193,7 @@ int main( int argc, char** argv )
 	bool straight   = true;// Text+ outputs straight alpha by default (Resolume's convention)
 	// "@resend=stale|sync": like a host that sends all its parameter values every frame.
 	// stale = the host ignores value events from the plugin, sync = it reads them back first.
+	bool expectInk = false;// "@expectInk": fail (exit 4) if the output is completely transparent
 	std::string resend;
 	int deferAt = 8;// frame at which "+Param=value" is applied ("@deferAt=N"); "++" one frame later
 	std::vector< std::string > resendOnly;// "@resend=stale:A1 Preset;A1 Mode" limits the re-sent parameters
@@ -245,6 +281,11 @@ int main( int argc, char** argv )
 		std::string key = arg.substr( 0, eq ), val = arg.substr( eq + 1 );
 		if( key == "@instances" )
 			continue;
+		if( key == "@expectInk" )
+		{
+			expectInk = true;
+			continue;
+		}
 		if( key == "@deferAt" )
 		{
 			deferAt = std::atoi( val.c_str() );
@@ -467,7 +508,16 @@ int main( int argc, char** argv )
 			}
 			std::printf( "\n" );
 		}
-		if( !dumpDir.empty() )
+		if( !dumpDir.empty() && bg == "none" )
+		{
+			std::vector< unsigned char > rgba( (size_t)W * H * 4 );
+			for( int y = 0; y < H; ++y )
+				std::memcpy( &rgba[ (size_t)y * W * 4 ], &pixels[ (size_t)( H - 1 - y ) * W * 4 ], (size_t)W * 4 );
+			char name[ 512 ];
+			std::snprintf( name, sizeof( name ), "%s/f%03d.png", dumpDir.c_str(), f );
+			stbi_write_png( name, W, H, 4, rgba.data(), W * 4 );
+		}
+		else if( !dumpDir.empty() )
 		{
 			std::vector< unsigned char > rgb( (size_t)W * H * 3 );
 			for( int y = 0; y < H; ++y )
@@ -492,6 +542,14 @@ int main( int argc, char** argv )
 		std::this_thread::sleep_for( std::chrono::milliseconds( dt > 0.0 ? 5 : 15 ) );
 	}
 
+	// "@bg=none": write the plugin's output as RGBA (straight alpha), top-down.
+	if( bg == "none" )
+	{
+		std::vector< unsigned char > rgba( (size_t)W * H * 4 );
+		for( int y = 0; y < H; ++y )
+			std::memcpy( &rgba[ (size_t)y * W * 4 ], &pixels[ (size_t)( H - 1 - y ) * W * 4 ], (size_t)W * 4 );
+		stbi_write_png( outPath, W, H, 4, rgba.data(), W * 4 );
+	}
 	// Composite the premultiplied output over a background for viewing; flip to top-down.
 	std::vector< unsigned char > out( (size_t)W * H * 3 );
 	for( int y = 0; y < H; ++y )
@@ -522,7 +580,8 @@ int main( int argc, char** argv )
 				out[ ( (size_t)y * W + x ) * 3 + c ] = (unsigned char)std::lround( std::fmin( 1.0f, v ) * 255.0f );
 			}
 		}
-	stbi_write_png( outPath, W, H, 3, out.data(), W * 3 );
+	if( bg != "none" )
+		stbi_write_png( outPath, W, H, 3, out.data(), W * 3 );
 
 	// Premultiplication sanity check: colour never exceeds alpha
 	int premulViolations = 0;
@@ -569,5 +628,14 @@ int main( int argc, char** argv )
 	call( FF_DEINITIALISE, u( 0 ) );
 	std::printf( "%s  instantiate %.1f ms, first frame %.1f ms, last frame %.1f ms  state-leaks %d  premul-violations %d\n", outPath, instantiateMs,
 				 firstFrameMs, frameMs, stateErrors, premulViolations );
+	if( expectInk )
+	{
+		size_t ink = 0;
+		for( size_t i = 3; i < pixels.size(); i += 4 )
+			ink += pixels[ i ] > 0;
+		std::printf( "  pixels with ink: %zu\n", ink );
+		if( ink == 0 )
+			return 4;
+	}
 	return stateErrors || premulViolations ? 3 : 0;
 }

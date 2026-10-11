@@ -27,7 +27,7 @@ FFResult initialiseLibrary()
 }
 
 CFFGLPluginInfo PluginInfo( PluginFactory< TextSource >,// create method
-							"KTXT",                      // unique ID, kept from 0.1 so saved compositions still find the plugin
+							"KTXT",                      // unique FFGL plugin ID
 							"Text+",                     // name (sorts next to Resolume's own Text sources)
 							2,                           // API major
 							1,                           // API minor
@@ -35,7 +35,7 @@ CFFGLPluginInfo PluginInfo( PluginFactory< TextSource >,// create method
 							2,                           // plugin minor
 							FF_SOURCE,
 							"Text source with distance-field outlines, shadows, glow and per-character animation",
-							"Text+ 0.6",
+							"Text+ 1.0",
 							0, nullptr, initialiseLibrary, nullptr );
 
 const char* kGroupText     = "Text";

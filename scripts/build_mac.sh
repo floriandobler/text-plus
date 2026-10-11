@@ -1,21 +1,21 @@
 #!/usr/bin/env bash
-# Baut TextPlus.bundle als Universal Binary (Apple Silicon + Intel).
+# Builds TextPlus.bundle as a universal binary (Apple Silicon + Intel).
 #
-#   ./scripts/build_mac.sh            # nur bauen
-#   ./scripts/build_mac.sh --install  # bauen und nach "Extra Effects" kopieren
+#   ./scripts/build_mac.sh            # build only
+#   ./scripts/build_mac.sh --install  # build and copy to Resolume's "Extra Effects" folder
 #
-# Voraussetzungen: Xcode Command Line Tools (xcode-select --install) und CMake >= 3.20
-# (brew install cmake). Die Abhängigkeiten (FFGL SDK, FreeType, HarfBuzz, msdfgen)
-# lädt CMake beim ersten Lauf per git herunter.
+# Requirements: Xcode Command Line Tools (xcode-select --install) and CMake >= 3.20
+# (brew install cmake). CMake fetches the dependencies (FFGL SDK, FreeType,
+# HarfBuzz, msdfgen) with git on the first run.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 if ! command -v cmake >/dev/null 2>&1; then
-	echo "CMake fehlt. Installieren mit: brew install cmake" >&2
+	echo "CMake is missing. Install it with: brew install cmake" >&2
 	exit 1
 fi
 if ! xcode-select -p >/dev/null 2>&1; then
-	echo "Xcode Command Line Tools fehlen. Installieren mit: xcode-select --install" >&2
+	echo "Xcode Command Line Tools are missing. Install them with: xcode-select --install" >&2
 	exit 1
 fi
 
@@ -25,25 +25,26 @@ cmake --build "$BUILD_DIR" --config Release --parallel
 
 BUNDLE="$BUILD_DIR/TextPlus.bundle"
 if [[ ! -d "$BUNDLE" ]]; then
-	echo "Build fertig, aber $BUNDLE wurde nicht gefunden." >&2
+	echo "Build finished, but $BUNDLE was not found." >&2
 	exit 1
 fi
 
-# Ad-hoc-Signatur: reicht für selbst gebaute Plugins auf dem eigenen Rechner.
+# Ad-hoc signature: enough for a plugin built on this Mac.
 codesign --force --sign - "$BUNDLE"
 echo
 lipo -info "$BUNDLE/Contents/MacOS/TextPlus"
 
 if [[ "${1:-}" == "--install" ]]; then
-	DEST="$HOME/Documents/Resolume Arena/Extra Effects"
-	mkdir -p "$DEST"
-	rm -rf "$DEST/TextPlus.bundle"
-	# Vorversion 0.1 hieß "Kontur Text" und hat dieselbe Plugin-ID: entfernen, sonst doppelt.
-	rm -rf "$DEST/KonturText.bundle"
-	cp -R "$BUNDLE" "$DEST/"
-	echo "Installiert nach: $DEST"
-	echo "Resolume neu starten. Das Plugin heißt \"Text+\" und liegt unter Sources."
+	for APP in "Resolume Arena" "Resolume Avenue"; do
+		DEST="$HOME/Documents/$APP/Extra Effects"
+		[[ -d "$HOME/Documents/$APP" ]] || continue
+		mkdir -p "$DEST"
+		rm -rf "$DEST/TextPlus.bundle" "$DEST/KonturText.bundle"
+		cp -R "$BUNDLE" "$DEST/"
+		echo "Installed to: $DEST"
+	done
+	echo "Restart Resolume. The plugin is called \"Text+\" and is listed under Sources."
 else
-	echo "Fertig: $BUNDLE"
-	echo "Installieren: ./scripts/build_mac.sh --install"
+	echo "Done: $BUNDLE"
+	echo "Install: ./scripts/build_mac.sh --install"
 fi

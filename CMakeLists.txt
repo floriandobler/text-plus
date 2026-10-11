@@ -12,7 +12,7 @@ if(APPLE)
     set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "Minimum macOS version")
 endif()
 
-project(TextPlus VERSION 0.6.0 LANGUAGES C CXX)
+project(TextPlus VERSION 1.0.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -23,7 +23,7 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     set(CMAKE_BUILD_TYPE Release CACHE STRING "" FORCE)
 endif()
 
-option(TEXTPLUS_BUILD_TESTS "Build the headless test host (Linux, EGL)" OFF)
+option(TEXTPLUS_BUILD_TESTS "Build the unit tests and the headless test host (Linux: EGL, macOS: CGL)" OFF)
 
 include(cmake/Dependencies.cmake)
 
@@ -97,12 +97,17 @@ endif()
 # ---------------------------------------------------------------------------
 # Tests (Linux only): layout unit test + headless FFGL host rendering PNGs
 # ---------------------------------------------------------------------------
-if(TEXTPLUS_BUILD_TESTS AND NOT APPLE AND NOT WIN32)
+if(TEXTPLUS_BUILD_TESTS AND NOT WIN32)
+    # Unit tests expect the Linux test fonts (DejaVu, Cantarell, Inter)
     add_executable(layout_test tests/layout_test.cpp)
     target_link_libraries(layout_test PRIVATE tp_core)
 
     add_executable(ffgl_test_host tests/ffgl_test_host.cpp tests/stb_impl.cpp)
     target_include_directories(ffgl_test_host PRIVATE src ${FFGL_SDK_DIR}/source/lib tests)
-    target_link_libraries(ffgl_test_host PRIVATE GLEW::GLEW OpenGL::GL EGL ${CMAKE_DL_LIBS})
+    if(APPLE)
+        target_link_libraries(ffgl_test_host PRIVATE "-framework OpenGL" ${CMAKE_DL_LIBS})
+    else()
+        target_link_libraries(ffgl_test_host PRIVATE GLEW::GLEW OpenGL::GL EGL ${CMAKE_DL_LIBS})
+    endif()
     add_dependencies(ffgl_test_host TextPlus)
 endif()
