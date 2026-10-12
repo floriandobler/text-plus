@@ -1,4 +1,5 @@
-// Headless FFGL host for Linux (EGL + Mesa) and macOS (CGL). Loads the plugin
+// Headless FFGL host for Linux (EGL + Mesa), macOS (CGL) and Windows (WGL,
+// e.g. with Mesa's opengl32.dll next to the executable). Loads the plugin
 // exactly like a host does (dlopen + plugMain), renders frames into an FBO and
 // writes a PNG.
 //
@@ -13,12 +14,17 @@
 #define GL_SILENCE_DEPRECATION
 #include <OpenGL/OpenGL.h>
 #include <OpenGL/gl3.h>
+#include <dlfcn.h>
+#elif defined( _WIN32 )
+#include <windows.h>
+#include <GL/glew.h>
+#include <GL/wglew.h>
 #else
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
 #include <GL/glew.h>
-#endif
 #include <dlfcn.h>
+#endif
 
 #include <chrono>
 #include <cmath>
@@ -72,6 +78,44 @@ static bool createContext()
 		return false;
 	std::printf( "GL: %s / %s\n", (const char*)glGetString( GL_RENDERER ), (const char*)glGetString( GL_VERSION ) );
 	return true;
+}
+#elif defined( _WIN32 )
+static bool createContext()
+{
+	// A hidden window, a legacy context to get wglCreateContextAttribsARB, then 4.1 core.
+	WNDCLASSA wc{};
+	wc.lpfnWndProc   = DefWindowProcA;
+	wc.hInstance     = GetModuleHandleA( nullptr );
+	wc.lpszClassName = "ffgl_test_host";
+	RegisterClassA( &wc );
+	HWND wnd = CreateWindowA( "ffgl_test_host", "ffgl_test_host", WS_OVERLAPPEDWINDOW, 0, 0, 64, 64, nullptr, nullptr, wc.hInstance, nullptr );
+	if( !wnd )
+		return false;
+	HDC dc = GetDC( wnd );
+	PIXELFORMATDESCRIPTOR pfd{};
+	pfd.nSize      = sizeof( pfd );
+	pfd.nVersion   = 1;
+	pfd.dwFlags    = PFD_DRAW_TO_WINDOW | PFD_SUPPORT_OPENGL | PFD_DOUBLEBUFFER;
+	pfd.iPixelType = PFD_TYPE_RGBA;
+	pfd.cColorBits = 32;
+	pfd.cDepthBits = 24;
+	if( !SetPixelFormat( dc, ChoosePixelFormat( dc, &pfd ), &pfd ) )
+		return false;
+	HGLRC legacy = wglCreateContext( dc );
+	if( !legacy || !wglMakeCurrent( dc, legacy ) )
+		return false;
+	auto createAttribs = (PFNWGLCREATECONTEXTATTRIBSARBPROC)wglGetProcAddress( "wglCreateContextAttribsARB" );
+	const int attrs[]  = { WGL_CONTEXT_MAJOR_VERSION_ARB, 4, WGL_CONTEXT_MINOR_VERSION_ARB, 1, WGL_CONTEXT_PROFILE_MASK_ARB, WGL_CONTEXT_CORE_PROFILE_BIT_ARB, 0 };
+	HGLRC core         = createAttribs ? createAttribs( dc, nullptr, attrs ) : nullptr;
+	if( !core )
+		return false;
+	wglMakeCurrent( dc, core );
+	wglDeleteContext( legacy );
+	glewExperimental = GL_TRUE;
+	glewInit();
+	glGetError();
+	std::printf( "GL: %s / %s\n", (const char*)glGetString( GL_RENDERER ), (const char*)glGetString( GL_VERSION ) );
+	return glGenFramebuffers != nullptr;
 }
 #else
 static bool createContext()
@@ -133,7 +177,22 @@ int main( int argc, char** argv )
 	}
 	std::string pluginPath = argv[ 1 ];
 	if( pluginPath.size() > 7 && pluginPath.compare( pluginPath.size() - 7, 7, ".bundle" ) == 0 )
-		pluginPath += "/Contents/MacOS/TextPlus";// macOS bundle: load its executable
+	{
+		// macOS bundle: load its executable (named like the bundle)
+		size_t slash     = pluginPath.find_last_of( '/', pluginPath.size() - 2 );
+		std::string name = pluginPath.substr( slash == std::string::npos ? 0 : slash + 1 );
+		name             = name.substr( 0, name.size() - 7 );
+		pluginPath += "/Contents/MacOS/" + name;
+	}
+#if defined( _WIN32 )
+	HMODULE lib = LoadLibraryA( pluginPath.c_str() );
+	if( !lib )
+	{
+		std::fprintf( stderr, "LoadLibrary failed: %lu\n", (unsigned long)GetLastError() );
+		return 1;
+	}
+	g_plugMain = (PlugMainFn)GetProcAddress( lib, "plugMain" );
+#else
 	void* lib = dlopen( pluginPath.c_str(), RTLD_NOW | RTLD_LOCAL );
 	if( !lib )
 	{
@@ -141,6 +200,7 @@ int main( int argc, char** argv )
 		return 1;
 	}
 	g_plugMain = (PlugMainFn)dlsym( lib, "plugMain" );
+#endif
 	if( !g_plugMain || call( FF_INITIALISE_V2, u( 0 ) ).UIntValue != FF_SUCCESS )
 	{
 		std::fprintf( stderr, "plugin init failed\n" );

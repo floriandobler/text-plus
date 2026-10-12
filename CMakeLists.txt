@@ -17,8 +17,8 @@ if(APPLE)
     set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "Minimum macOS version")
 endif()
 if(MSVC)
-    # Static C++ runtime: the DLL needs no Visual C++ redistributable
-    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+    # Same C++ runtime as the FFGL SDK and its GLEW library (Resolume installs it)
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
 endif()
 
 project(ResolumePlus VERSION 1.1.0 LANGUAGES C CXX)

@@ -51,6 +51,13 @@ jobs:
             "Text=merged outlines" "Size=120" "Outline Width=16" "A1 Mode=1" "A1 Opacity=0" "A1 Spread=2" "A1 Progress=0.6" @expectInk=1
           ./build-mac/ffgl_test_host build-mac/TextPlus.bundle smoke/csv.png 960 300 \
             "Text File=plugins/textplus/tests/data/lower_thirds.csv" "Slide=0.9" "L2 Style=1" "L2 Size=50" @expectInk=1 @print=Slide
+          ./build-mac/ffgl_test_host build-mac/TextPlus.bundle smoke/plates.png 1280 400 \
+            "Text=Anna Musterfrau" "Text 2=REGIE & LICHT" "Font=Helvetica Neue / Bold" "Size=90" "Align=0" "L2 Style=1" "L2 Size=45" \
+            "Plate=2" "Plate Radius=10" "Shadow Distance=8" @expectInk=1
+          ./build-mac/ffgl_test_host build-mac/TextPlus.bundle smoke/fallback.png 1280 300 \
+            "Text=Emoji 🎉 1️⃣ 中文 日本語 한국어 עברית" "Font=Helvetica Neue / Regular" "Size=70" "Outline Width=4" @expectInk=1 @frames=40
+          ./build-mac/ffgl_test_host build-mac/TextPlus.bundle smoke/ticker.png 1280 200 \
+            "Display=3" "Text=Ticker on macOS" "Scroll Speed=300" "Plate=1" @dt=0.05 @frames=30 @expectInk=1
           python3 plugins/textplus/tests/fuzz_params.py build-mac/ffgl_test_host build-mac/TextPlus.bundle 15
 
       - name: Package
@@ -79,6 +86,7 @@ jobs:
           path: dist/TextPlus-*-macOS.zip
 
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: smoke-renders
           path: smoke/*.png
@@ -92,3 +100,92 @@ jobs:
           name: Text+ ${{ env.VERSION }}
           body_path: docs/releases/v${{ env.VERSION }}.md
           files: dist/TextPlus-*-macOS.zip
+
+  windows:
+    name: Windows x64 DLL (not yet tested in Resolume)
+    runs-on: windows-2022
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build (MSVC)
+        shell: bash
+        run: |
+          cmake -S . -B build-win -A x64 -DPLUS_BUILD_TESTS=ON
+          cmake --build build-win --config Release --parallel
+          ls -la build-win/*.dll build-win/*.exe
+
+      # GitHub's Windows machines have no GPU: Mesa's llvmpipe provides OpenGL 4.5
+      # in software when its opengl32.dll sits next to the test host.
+      - name: Software OpenGL (Mesa for Windows)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download --repo pal1000/mesa-dist-win --pattern '*-release-msvc.7z' --dir mesa
+          ls mesa
+          7z x mesa/*.7z -omesa/x > /dev/null
+          cp mesa/x/x64/*.dll build-win/
+
+      - name: Smoke test (loads the DLL like Resolume, renders with Mesa)
+        shell: bash
+        env:
+          GALLIUM_DRIVER: llvmpipe
+        run: |
+          mkdir -p smoke
+          ./build-win/ffgl_test_host.exe build-win/TextPlus.dll --list | head -n 30
+          ./build-win/ffgl_test_host.exe build-win/TextPlus.dll smoke/outline_glow.png 1280 720 \
+            "Text=Text+ on Windows" "Text 2=DirectWrite fallback, Mesa GL" "L2 Style=1" "L2 Size=40" "L2 Color=0.1" "L2 Color_Alpha=1" \
+            "Font=Arial / Bold" "Size=140" "Outline Width=18" "Outline 2 Width=8" "Glow Radius=40" "Shadow Distance=12" @expectInk=1
+          ./build-win/ffgl_test_host.exe build-win/TextPlus.dll smoke/plates.png 1280 400 \
+            "Text=Anna Musterfrau" "Text 2=REGIE & LICHT" "Font=Segoe UI / Bold" "Size=90" "Align=0" "L2 Style=1" "L2 Size=45" \
+            "Plate=2" "Plate Radius=10" "Shadow Distance=8" @expectInk=1
+          ./build-win/ffgl_test_host.exe build-win/TextPlus.dll smoke/fallback.png 1280 300 \
+            "Text=Emoji 🎉 1️⃣ 中文 日本語 한국어" "Font=Arial / Regular" "Size=70" "Outline Width=4" @expectInk=1 @frames=40
+          ./build-win/ffgl_test_host.exe build-win/TextPlus.dll smoke/csv.png 960 300 \
+            "Text File=plugins/textplus/tests/data/lower_thirds.csv" "Slide=0.9" "L2 Style=1" "L2 Size=50" @expectInk=1 @print=Slide
+          ./build-win/ffgl_test_host.exe build-win/TextPlus.dll smoke/ticker.png 1280 200 \
+            "Display=3" "Text=Ticker on Windows" "Scroll Speed=300" "Plate=1" @dt=0.05 @frames=30 @expectInk=1
+          python plugins/textplus/tests/fuzz_params.py build-win/ffgl_test_host.exe build-win/TextPlus.dll 10
+
+      - name: Package
+        shell: bash
+        run: |
+          VERSION=$(sed -nE 's/^project\(ResolumePlus VERSION ([0-9.]+).*/\1/p' CMakeLists.txt)
+          mkdir -p dist/TextPlus
+          cp build-win/TextPlus.dll dist/TextPlus/
+          cp LICENSE THIRD_PARTY_NOTICES.md dist/TextPlus/
+          cat > dist/TextPlus/INSTALL.txt <<TXT
+          Text+ ${VERSION} for Resolume Arena / Avenue 7 on Windows (x64)
+
+          NOT YET TESTED IN RESOLUME ON WINDOWS. It builds and passes the automated
+          tests (software OpenGL); please report problems in the GitHub issues.
+
+          1. Copy TextPlus.dll to Documents\Resolume Arena\Extra Effects
+             (or Resolume Avenue; see Preferences > Video > FFGL for your plugin folder).
+          2. Restart Resolume. Text+ is listed under Sources.
+
+          Requires the Microsoft Visual C++ 2015-2022 runtime (x64), which Resolume installs.
+          Documentation: https://github.com/${{ github.repository }}
+          TXT
+          (cd dist && 7z a -tzip "TextPlus-${VERSION}-Windows.zip" TextPlus > /dev/null)
+          echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: TextPlus-Windows
+          path: dist/TextPlus-*-Windows.zip
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: smoke-renders-windows
+          path: smoke/*.png
+
+      - name: Attach to release
+        if: github.event_name == 'release' || startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.release.tag_name || github.ref_name }}
+          files: dist/TextPlus-*-Windows.zip
