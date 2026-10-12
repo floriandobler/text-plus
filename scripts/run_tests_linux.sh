@@ -48,6 +48,19 @@ grep -q "(Medium)" out/lower_third.txt && grep -q "(Light Italic)" out/lower_thi
 # Wrap in a box, justified
 $H $P out/wrap_box.png 1280 720 "Text=Distance fields keep every outline outside the letters, at any size, with shadows and glow computed in one pass." "Font=Inter / Regular" "Size=64" "Wrap=1" "Box Width=900" "Align=3"
 $H $P out/menus.png 320 180 "Font=Inter / Regular" "+Style=3" @frames=16
+# 1.1: clock & counter, ticker, roll, plates with the lower-third preset, scramble, inner effects, fallback
+$H $P out/counter.png 960 200 "Source=2" "Timer Mode=4" "Count From=0" "Count To=12840" "Count=0.5" "Text={timer} Besucher" "Number Format=2" "Font=Inter / Black" "Size=80" @expectInk=1 @frames=10
+$H $P out/countdown.png 960 200 "Source=2" "Timer Mode=2" "Duration=1:30" "Text=Start in {timer}" "Font=Inter / Bold" "Size=80" @expectInk=1 @frames=10
+$H $P out/ticker.png 1280 200 "Display=3" "Text=Breaking: Text+ 1.1" "Text 2=Second item" "Font=Inter / Bold" "Size=64" "Scroll Speed=300" "Plate=1" @dt=0.05 @frames=30 @expectInk=1
+$H $P out/roll.png 640 480 "Display=4" "Text=CREDITS" "Text 2=Direction: Anna" "Text 3=Sound: Ben" "Font=Inter / Regular" "Size=48" "Scroll Speed=120" "Roll Loop=0" "Plate=2" "Plate Radius=20" @dt=0.05 @frames=60 @expectInk=1
+$H $P out/lower_third_preset.png 1280 400 "Text=Anna Musterfrau" "Text 2=REGIE & LICHTDESIGN" "Font=Inter / Black" "Size=90" "Align=0" "Anchor H=2" "L2 Style=1" "L2 Size=45" "Plate Radius=10" "Plate Slant=-10" "Plate Border=3" "Shadow Distance=8" "+A1 Preset=15" "@ramp=A1 Progress:0:1" "@ramp=A2 Progress:-0.4:1" @dt=0.033 @frames=40 @expectInk=1 "@print=Plate,A1 Target,A2 Mode" | tee out/lower_third_preset.txt
+grep -q "Plate *= 2 " out/lower_third_preset.txt && grep -q "A1 Target *= 1 " out/lower_third_preset.txt || { echo "ERROR: lower third preset"; exit 1; }
+$H $P out/decode.png 960 160 "Text=DECODING" "Font=Inter / Black" "Size=80" "+A1 Preset=14" "++A1 Progress=0.5" @expectInk=1 @frames=14
+$H $P out/inner_effects.png 960 260 "Text=INNER" "Font=Inter / Black" "Size=200" "Fill Color=0.08" "Fill Color_Sat=0.9" "Inner Glow Radius=25" "Inner Shadow Distance=10" "Shadow Angle=135" "Outline Width=4" @expectInk=1 @frames=8
+$H $P out/fallback.png 1100 300 "Text=Emoji 🎉 👍🏽 1️⃣ 🇩🇪" "Text 2=שלום · Привет · Ελλάδα" "Case=1" "Font=Inter / Bold" "Size=70" "Outline Width=4" @expectInk=1 @frames=20
+# 1.0 compositions: "Slides" and a text file become Display / Source
+$H $P out/legacy.png 640 200 "Slides=1" "Text=A|B|C" @print=Display | tee out/legacy.txt
+grep -q "Display *= 1 " out/legacy.txt || { echo "ERROR: legacy Slides -> Display"; exit 1; }
 # Robustness: random parameter combinations (no crash, GL error or state leak)
 python3 plugins/textplus/tests/fuzz_params.py $H $P 20
 echo "Images in out/"

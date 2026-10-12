@@ -358,6 +358,8 @@ private:
 	double lastFrameWall = -1.0;
 	bool retriggered     = false;
 	double scrollTime    = 0.0;// seconds the ticker / roll has been moving
+	double hostDelta     = 0.0;// host time passed since the last frame
+	int hostTimeCalls    = 0;  // the host sends its time (then tickers follow it, e.g. a paused clip)
 
 	// Layout cache
 	LayoutParams lastLayoutParams;

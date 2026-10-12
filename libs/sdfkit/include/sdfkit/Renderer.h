@@ -25,7 +25,7 @@
 // Clipping. A shape can be revealed by a rectangle in layout space (wipes):
 // glyphs are masked by it, boxes are cut by it (the plate "grows" with the
 // wipe edge, keeping its border and shadow). A window in block space fades
-// the text group at its edges (tickers, rolls).
+// both groups at its edges (tickers, rolls).
 
 #include "ffglkit/GL.h"
 
@@ -92,6 +92,7 @@ struct Style
 	Color plate;
 	float plateBorderWidth = 0;// px, inside the plate
 	Color plateBorderColor;
+	float plateMerge = 0;// px: overlapping plates melt into one shape with fillets of this size
 	// Both
 	Color shadow;
 	float shadowDx = 0, shadowDy = 0;// px, y down
@@ -118,7 +119,7 @@ struct BlockTransform
 	float boxLeft = 0, boxTop = 0, boxRight = 0, boxBottom = 0;
 };
 
-// Text is visible inside, fading out over `fade` px towards the edges (block space).
+// Shapes are visible inside, fading out over `fade` px towards the edges (block space).
 struct Window
 {
 	bool on   = false;

@@ -85,6 +85,7 @@ struct LayoutParams
 	FitMode fit            = FitMode::Off;
 	bool kerning           = true;
 	bool ligatures         = true;
+	bool tabularNumbers    = false;// equal-width digits (clocks, counters) where the font has them
 	bool pipeIsNewline     = true;
 	bool markup            = true;// inline colours {#ff8800}...{/}
 	LineStyle lines[ kLineStyles ];// [0] is ignored: line 1 always uses the main style
@@ -96,7 +97,7 @@ struct LayoutParams
 				return false;
 		return text == o.text && sizePx == o.sizePx && trackingPermille == o.trackingPermille && leadingPercent == o.leadingPercent &&
 			boxWidth == o.boxWidth && boxHeight == o.boxHeight && align == o.align && anchorH == o.anchorH && anchorV == o.anchorV &&
-			fit == o.fit && kerning == o.kerning && ligatures == o.ligatures && pipeIsNewline == o.pipeIsNewline && markup == o.markup;
+			fit == o.fit && kerning == o.kerning && ligatures == o.ligatures && tabularNumbers == o.tabularNumbers && pipeIsNewline == o.pipeIsNewline && markup == o.markup;
 	}
 	bool operator!=( const LayoutParams& o ) const { return !( *this == o ); }
 };

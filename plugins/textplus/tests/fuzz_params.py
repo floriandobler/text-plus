@@ -21,7 +21,7 @@ for line in subprocess.run([host, plugin, '--list'], capture_output=True, text=T
 
 texts = ['', ' ', 'A', 'Hello World', 'Ünïcödé Größe ß', 'emoji 😀 and 中文 missing', 'a|b|c|d|e|f',
          'x' * 600, 'Tab\there', '{#ff0000}red{/} {{literal', 'Line one||Block two||Three', 'W' * 40 + '|' + 'i' * 80]
-skip = {'Text File', 'Font File', 'Text', 'Font', 'L2 Font', 'L3 Font'}
+skip = {'Text File', 'Font File', 'Text', 'Font', 'L2 Font', 'L3 Font', 'Target Time', 'Duration', 'Separator'}
 failures = 0
 out = tempfile.mkdtemp()
 for r in range(runs):
@@ -36,11 +36,15 @@ for r in range(runs):
             v = random.choice([0, 1])
         elif typ in (0,):
             v = random.choice([0, 1])
-        elif typ == 11:  # option: index, may be out of range on purpose
-            v = random.randint(0, 6)
+        elif typ == 11:  # option: value, may be out of range on purpose
+            v = random.randint(0, 19)
         else:
             v = random.uniform(lo - 0.1 * (hi - lo), hi + 0.1 * (hi - lo))  # also slightly out of range
         args.append(('+' if random.random() < 0.3 else '') + f'{name}={v:.4g}')
+    for k, choices in (('Target Time', ['20:00', '0:00', 'x', '', '23:59:59']), ('Duration', ['5:00', '90', '1h', '', 'abc']),
+                       ('Separator', ['', ' • ', '|', '   +++   '])):
+        if random.random() < 0.3:
+            args.append(k + '=' + random.choice(choices))
     for k in ('L2 Font', 'L3 Font'):
         if random.random() < 0.3:
             args.append(k + '=' + random.choice(['Bold', 'Light Italic', 'DejaVu Sans / Bold', 'x', '']))

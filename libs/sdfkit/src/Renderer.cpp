@@ -151,10 +151,11 @@ float boxDistancePx()
 	return ( sdParallelogram( p, wi, he, s * he ) - r ) * vScale;
 }
 
+// Signed distance to a rectangle given by its edges. Computed edge by edge: an
+// "open" edge at 1e9 would lose all precision in a centre/half-size form.
 float rectDistance( vec2 p, vec4 rc )
 {
-	vec2 c = 0.5 * ( rc.xy + rc.zw ), h = 0.5 * ( rc.zw - rc.xy );
-	vec2 d = abs( p - c ) - h;
+	vec2 d = max( rc.xy - p, p - rc.zw );
 	return length( max( d, 0.0 ) ) + min( max( d.x, d.y ), 0.0 );
 }
 
@@ -281,6 +282,7 @@ uniform int uInnerShadowOn;
 uniform vec4 uPlate;
 uniform vec4 uPlateBorder;
 uniform float uPlateBorderWidth;
+uniform float uPlateMerge;
 uniform float uEdge;         // anti-aliasing width in px
 
 out vec4 oColor;
@@ -290,161 +292,99 @@ const float kFar = 1.0e4;
 vec4 premul( vec4 c ) { return vec4( c.rgb * c.a, c.a ); }
 float inside( float d, float edge ) { return clamp( 0.5 - ( d - edge ) / uEdge, 0.0, 1.0 ); }// coverage of "d < edge"
 
-// Nearest shapes at one pixel: distance, opacity, tint amount, tint colour
-struct Entries
-{
-	int n;
-	vec4 a[ 4 ];// distance, id, opacity, tint amount
-	vec3 tint[ 4 ];
-};
-
-void fetchLayer( int k, ivec2 ip, out vec4 a, out vec3 b )
-{
-	if( k == 0 ) { a = texelFetch( uA0, ip, 0 ); b = texelFetch( uB0, ip, 0 ).rgb; }
-	else if( k == 1 ) { a = texelFetch( uA1, ip, 0 ); b = texelFetch( uB1, ip, 0 ).rgb; }
-	else if( k == 2 ) { a = texelFetch( uA2, ip, 0 ); b = texelFetch( uB2, ip, 0 ).rgb; }
-	else { a = texelFetch( uA3, ip, 0 ); b = texelFetch( uB3, ip, 0 ).rgb; }
-}
-
-void fetchPlate( int k, ivec2 ip, out vec4 a, out vec3 b )
-{
-	if( k == 0 ) { a = texelFetch( uPA0, ip, 0 ); b = texelFetch( uPB0, ip, 0 ).rgb; }
-	else { a = texelFetch( uPA1, ip, 0 ); b = texelFetch( uPB1, ip, 0 ).rgb; }
-}
-
-Entries none()
-{
-	Entries e;
-	e.n = 0;
-	return e;
-}
+// All shapes that matter at this pixel, from up to five places:
+//   set 0 text at p, 1 text at the shadow offset, 2 text at the inner shadow
+//   offset, 3 plates at p, 4 plates at the shadow offset.
+const int kMaxEntries = 16;
+vec4 E[ kMaxEntries ];// distance, set, opacity, tint amount
+vec3 Et[ kMaxEntries ];// tint colour
+int nE = 0;
 
 bool outsideField( ivec2 ip ) { return any( lessThan( ip, ivec2( 0 ) ) ) || any( greaterThanEqual( ip, ivec2( uFieldSize ) ) ); }
 
-Entries loadText( ivec2 ip )
+void addLayer( vec4 a, vec3 b, float set )
 {
-	Entries e = none();
+	E[ nE ]  = vec4( a.r, set, a.b, a.a );
+	Et[ nE ] = b;
+	nE++;
+}
+
+void loadText( ivec2 ip, float set )
+{
 	if( outsideField( ip ) )
-		return e;
-	for( int k = 0; k < 4; ++k )
+		return;
+	for( int k = 0; k < uLayers; ++k )
 	{
-		if( k >= uLayers )
-			break;
 		vec4 a;
 		vec3 b;
-		fetchLayer( k, ip, a, b );
+		if( k == 0 ) { a = texelFetch( uA0, ip, 0 ); b = texelFetch( uB0, ip, 0 ).rgb; }
+		else if( k == 1 ) { a = texelFetch( uA1, ip, 0 ); b = texelFetch( uB1, ip, 0 ).rgb; }
+		else if( k == 2 ) { a = texelFetch( uA2, ip, 0 ); b = texelFetch( uB2, ip, 0 ).rgb; }
+		else { a = texelFetch( uA3, ip, 0 ); b = texelFetch( uB3, ip, 0 ).rgb; }
 		if( a.r >= 0.5 * kFar )
 			break;// no further shape near this pixel
-		e.a[ e.n ]    = a;
-		e.tint[ e.n ] = b;
-		e.n++;
+		addLayer( a, b, set );
 	}
-	return e;
 }
 
-Entries loadPlates( ivec2 ip )
+void loadPlates( ivec2 ip, float set )
 {
-	Entries e = none();
 	if( outsideField( ip ) )
-		return e;
-	for( int k = 0; k < 2; ++k )
+		return;
+	for( int k = 0; k < uPlateLayers; ++k )
 	{
-		if( k >= uPlateLayers )
-			break;
 		vec4 a;
 		vec3 b;
-		fetchPlate( k, ip, a, b );
+		if( k == 0 ) { a = texelFetch( uPA0, ip, 0 ); b = texelFetch( uPB0, ip, 0 ).rgb; }
+		else { a = texelFetch( uPA1, ip, 0 ); b = texelFetch( uPB1, ip, 0 ).rgb; }
 		if( a.r >= 0.5 * kFar )
 			break;
-		e.a[ e.n ]    = a;
-		e.tint[ e.n ] = b;
-		e.n++;
+		addLayer( a, b, set );
 	}
-	return e;
 }
 
-// Union distance of the shapes with opacity >= t
-float unionDistance( Entries e, float t )
+float smoothUnion( float d, float b, float k )
 {
-	float d = kFar;
-	for( int i = 0; i < 4; ++i )
-		if( i < e.n && e.a[ i ].b >= t )
-			d = min( d, e.a[ i ].r );
-	return d;
-}
-
-// Tint of the shapes with opacity >= t, blended smoothly where they meet
-vec4 unionTint( Entries e, float t )
-{
-	float wSum = 0.0, wtSum = 0.0;
-	vec3 c     = vec3( 0.0 );
-	for( int i = 0; i < 4; ++i )
-		if( i < e.n && e.a[ i ].b >= t )
-		{
-			float w  = exp( clamp( -e.a[ i ].r / uAttrSoftness, -40.0, 40.0 ) );
-			float wt = w * e.a[ i ].a;
-			wSum += w;
-			wtSum += wt;
-			c += wt * e.tint[ i ];
-		}
-	if( wtSum <= 0.0 || wSum <= 0.0 )
-		return vec4( 0.0 );
-	return vec4( c / wtSum, clamp( wtSum / wSum, 0.0, 1.0 ) );
-}
-
-float th[ 16 ];
-int nt = 0;
-void addThresholds( Entries e )
-{
-	for( int i = 0; i < 4; ++i )
-		if( i < e.n && nt < 16 )
-			th[ nt++ ] = e.a[ i ].b;
+	if( k <= 0.0 || d >= 0.5 * kFar )
+		return min( d, b );
+	float h = max( k - abs( d - b ), 0.0 ) / k;
+	return min( d, b ) - h * h * k * 0.25;
 }
 
 void main()
 {
 	vec2 frag = gl_FragCoord.xy - uViewportOrigin;
 	ivec2 ip  = ivec2( frag );
-	Entries ep = loadText( ip );
 	bool shadowOn = uShadow.a > 0.0;
 	bool platesOn = uPlateLayers > 0;
-	Entries eq = none();
+	loadText( ip, 0.0 );
 	if( shadowOn )
-		eq = loadText( ip - uShadowOffset );
-	Entries er = none();
+		loadText( ip - uShadowOffset, 1.0 );
 	if( uInnerShadowOn == 1 )
-		er = loadText( ip - uInnerShadowOffset );
-	Entries pp = none(), pq = none();
+		loadText( ip - uInnerShadowOffset, 2.0 );
 	if( platesOn )
 	{
-		pp = loadPlates( ip );
+		loadPlates( ip, 3.0 );
 		if( shadowOn )
-			pq = loadPlates( ip - uShadowOffset );
+			loadPlates( ip - uShadowOffset, 4.0 );
 	}
-	if( ep.n == 0 && eq.n == 0 && pp.n == 0 && pq.n == 0 )
+	if( nE == 0 )
 	{
 		oColor = vec4( 0.0 );
 		return;
 	}
 
-	// Opacity thresholds of all shapes involved, highest first
-	addThresholds( ep );
-	addThresholds( eq );
-	addThresholds( er );
-	addThresholds( pp );
-	addThresholds( pq );
-	for( int i = 1; i < 16; ++i )
+	// Most opaque first
+	int order[ kMaxEntries ];
+	for( int i = 0; i < nE; ++i )
 	{
-		if( i >= nt )
-			break;
-		float v = th[ i ];
-		int j   = i - 1;
-		while( j >= 0 && th[ j ] < v )
+		int j = i;
+		while( j > 0 && E[ order[ j - 1 ] ].b < E[ i ].b )
 		{
-			th[ j + 1 ] = th[ j ];
+			order[ j ] = order[ j - 1 ];
 			--j;
 		}
-		th[ j + 1 ] = v;
+		order[ j ] = i;
 	}
 
 	// Fill colour: solid or box gradient (position based, the same for every threshold)
@@ -460,21 +400,52 @@ void main()
 		baseFill   = mix( uFill, uFill2, t );
 	}
 
+	// The integral over the opacity threshold t: going from the most opaque shape
+	// down, the shapes with opacity >= t only ever grow, so unions and tint sums
+	// are kept as running values and every level is shaded once.
+	float dText = kFar, dShadowText = kFar, dInner = kFar, dPlate = kFar, dShadowPlate = kFar;
+	float tw = 0.0, twt = 0.0, pw = 0.0, pwt = 0.0;// tint weights (text, plates)
+	vec3 tc = vec3( 0.0 ), pc3 = vec3( 0.0 );
 	float outer = uOutline1Edges.y + ( uOutline2Width > 0.0 ? uOutline2Width : 0.0 );
 	vec4 result = vec4( 0.0 );
-	for( int k = 0; k < 16; ++k )
+	for( int s = 0; s < nE; ++s )
 	{
-		if( k >= nt )
-			break;
-		float t      = th[ k ];
-		float weight = t - ( k + 1 < nt ? th[ k + 1 ] : 0.0 );
-		if( weight <= 0.0 )
-			continue;
-		float d = unionDistance( ep, t );
+		int i     = order[ s ];
+		vec4 e    = E[ i ];
+		int set   = int( e.g + 0.5 );
+		if( set == 0 )
+		{
+			dText    = min( dText, e.r );
+			float w  = exp( clamp( -e.r / uAttrSoftness, -40.0, 40.0 ) );
+			tw      += w;
+			twt     += w * e.a;
+			tc      += w * e.a * Et[ i ];
+		}
+		else if( set == 1 )
+			dShadowText = min( dShadowText, e.r );
+		else if( set == 2 )
+			dInner = min( dInner, e.r );
+		else if( set == 3 )
+		{
+			dPlate   = smoothUnion( dPlate, e.r, uPlateMerge );
+			float w  = exp( clamp( -e.r / uAttrSoftness, -40.0, 40.0 ) );
+			pw      += w;
+			pwt     += w * e.a;
+			pc3     += w * e.a * Et[ i ];
+		}
+		else
+			dShadowPlate = smoothUnion( dShadowPlate, e.r, uPlateMerge );
 
+		float t    = e.b;
+		float next = s + 1 < nE ? E[ order[ s + 1 ] ].b : 0.0;
+		float weight = t - next;
+		if( weight <= 0.0 )
+			continue;// more shapes at the same opacity follow
+
+		float d   = dText;
 		vec4 fill = baseFill;
-		vec4 tint = unionTint( ep, t );
-		fill.rgb  = mix( fill.rgb, tint.rgb, tint.a );
+		if( twt > 0.0 && tw > 0.0 )
+			fill.rgb = mix( fill.rgb, tc / twt, clamp( twt / tw, 0.0, 1.0 ) );
 		vec4 fillP = premul( fill );
 		if( uInnerGlowRadius > 0.0 && uInnerGlow.a > 0.0 )
 		{
@@ -486,8 +457,7 @@ void main()
 		if( uInnerShadowOn == 1 )
 		{
 			float w  = max( uInnerShadowSoftness, uEdge );
-			float dr = unionDistance( er, t ) - uOutline1Edges.z;// the shape moved by the offset
-			vec4 is  = premul( uInnerShadow ) * smoothstep( -0.5 * w, 0.5 * w, dr );
+			vec4 is  = premul( uInnerShadow ) * smoothstep( -0.5 * w, 0.5 * w, dInner - uOutline1Edges.z );// the shape moved by the offset
 			fillP    = is + fillP * ( 1.0 - is.a );
 		}
 
@@ -509,45 +479,41 @@ void main()
 			glowC    = premul( uGlow ) * clamp( uGlowStrength * kk * kk, 0.0, 1.0 );
 		}
 
+		vec4 back = vec4( 0.0 );
 		if( !platesOn )
 		{
-			// Effects behind the text
-			vec4 back = vec4( 0.0 );
+			// Effects behind the text, knocked out under the text silhouette (Photoshop's default).
 			if( shadowOn )
 			{
 				float w  = max( uShadowSoftness, uEdge );
-				float ds = unionDistance( eq, t ) - outer - uShadowSpread;
+				float ds = dShadowText - outer - uShadowSpread;
 				back     = premul( uShadow ) * ( 1.0 - smoothstep( -0.5 * w, 0.5 * w, ds ) );
 			}
 			back = glowC + back * ( 1.0 - glowC.a );
-			// Effects are knocked out under the text silhouette (Photoshop's default).
 			back *= 1.0 - textShape;
-			result += weight * ( text + back * ( 1.0 - text.a ) );
-			continue;
 		}
-
-		// Plates
-		float dP    = unionDistance( pp, t );
-		vec4 pc     = uPlate;
-		vec4 ptint  = unionTint( pp, t );
-		pc.rgb      = mix( pc.rgb, ptint.rgb, ptint.a );
-		float plateShape = inside( dP, 0.0 );
-		vec4 plateC = vec4( 0.0 );
-		if( uPlateBorderWidth > 0.0 )
-			plateC = mix( plateC, premul( uPlateBorder ), plateShape );
-		plateC = mix( plateC, premul( pc ), inside( dP, -uPlateBorderWidth ) );
-
-		vec4 shadowC = vec4( 0.0 );
-		if( shadowOn )
+		else
 		{
-			float w  = max( uShadowSoftness, uEdge );
-			float ds = min( unionDistance( eq, t ) - outer, unionDistance( pq, t ) ) - uShadowSpread;
-			shadowC  = premul( uShadow ) * ( 1.0 - smoothstep( -0.5 * w, 0.5 * w, ds ) ) * ( 1.0 - plateShape ) * ( 1.0 - textShape );
+			vec4 pcol = uPlate;
+			if( pwt > 0.0 && pw > 0.0 )
+				pcol.rgb = mix( pcol.rgb, pc3 / pwt, clamp( pwt / pw, 0.0, 1.0 ) );
+			float plateShape = inside( dPlate, 0.0 );
+			vec4 plateC = vec4( 0.0 );
+			if( uPlateBorderWidth > 0.0 )
+				plateC = mix( plateC, premul( uPlateBorder ), plateShape );
+			plateC = mix( plateC, premul( pcol ), inside( dPlate, -uPlateBorderWidth ) );
+			vec4 shadowC = vec4( 0.0 );
+			if( shadowOn )
+			{
+				float w  = max( uShadowSoftness, uEdge );
+				float ds = min( dShadowText - outer, dShadowPlate ) - uShadowSpread;
+				shadowC  = premul( uShadow ) * ( 1.0 - smoothstep( -0.5 * w, 0.5 * w, ds ) ) * ( 1.0 - plateShape ) * ( 1.0 - textShape );
+			}
+			glowC *= 1.0 - textShape;
+			back = plateC + shadowC * ( 1.0 - plateC.a );
+			back = glowC + back * ( 1.0 - glowC.a );
 		}
-		glowC *= 1.0 - textShape;
-		vec4 c = plateC + shadowC * ( 1.0 - plateC.a );
-		c      = glowC + c * ( 1.0 - glowC.a );
-		result += weight * ( text + c * ( 1.0 - text.a ) );
+		result += weight * ( text + back * ( 1.0 - text.a ) );
 	}
 	if( result.a > 0.0 )
 		result.rgb /= result.a;// Resolume composites sources as straight alpha
@@ -941,9 +907,12 @@ void Renderer::render( const FFGLViewportStruct& vp, GLuint hostFbo, const std::
 	varies( glyphs, alphaVaries, tintVaries );
 	varies( boxes, plateAlphaVaries, plateTintVaries );
 	if( window.on )
-		alphaVaries = true;
+		alphaVaries = plateAlphaVaries = true;
 	const int layers      = !haveText ? 0 : alphaVaries ? kLayers : tintVaries ? 2 : 1;
-	const int plateLayers = !havePlates ? 0 : plateAlphaVaries || plateTintVaries ? kPlateLayers : 1;
+	// Melting plates need the two nearest plates per pixel
+	const bool plateMerge = style.plateMerge > 0.0f && boxes.size() > 1;
+	const int plateLayers = !havePlates ? 0 : plateAlphaVaries || plateTintVaries || plateMerge ? kPlateLayers : 1;
+	const float windowFade = window.on ? std::max( 0.0f, window.fade ) : -1.0f;
 
 	bbox = Rect{ bbox.x0 - 2, bbox.y0 - 2, bbox.x1 + 2, bbox.y1 + 2 };
 	const bool shadow = style.shadow.a > 0;
@@ -990,13 +959,14 @@ void Renderer::render( const FFGLViewportStruct& vp, GLuint hostFbo, const std::
 	{
 		glUniform1f( glGetUniformLocation( fp, "uSize" ), t.sizePx );
 		glUniform4f( glGetUniformLocation( fp, "uWindow" ), window.x0, window.y0, window.x1, window.y1 );
-		glUniform1f( glGetUniformLocation( fp, "uWindowFade" ), window.on ? std::max( 0.0f, window.fade ) : -1.0f );
+		glUniform1f( glGetUniformLocation( fp, "uWindowFade" ), windowFade );
 		drawField( glyphVbo, glyphs.size(), 0, layers, alphaVaries, style.reach() + 2.0f, programs->layerFbo, programs->layerA );
 	}
 	if( havePlates )
 	{
 		glUniform1f( glGetUniformLocation( fp, "uSize" ), 1.0f );
-		glUniform1f( glGetUniformLocation( fp, "uWindowFade" ), -1.0f );
+		glUniform4f( glGetUniformLocation( fp, "uWindow" ), window.x0, window.y0, window.x1, window.y1 );
+		glUniform1f( glGetUniformLocation( fp, "uWindowFade" ), windowFade );
 		drawField( boxVbo, boxes.size(), 1, plateLayers, plateAlphaVaries, style.plateReach() + 2.0f, programs->plateFbo, programs->plateA );
 	}
 	glDisable( GL_DEPTH_TEST );
@@ -1082,6 +1052,7 @@ void Renderer::render( const FFGLViewportStruct& vp, GLuint hostFbo, const std::
 	setColor( prog, "uPlate", style.plate );
 	setColor( prog, "uPlateBorder", style.plateBorderColor );
 	glUniform1f( glGetUniformLocation( prog, "uPlateBorderWidth" ), style.plateBorderWidth );
+	glUniform1f( glGetUniformLocation( prog, "uPlateMerge" ), plateMerge ? style.plateMerge : 0.0f );
 	glUniform1f( glGetUniformLocation( prog, "uEdge" ), std::max( 0.25f, style.edgeSoftness ) );
 
 	glBindVertexArray( emptyVao );

@@ -197,9 +197,13 @@ int main( int argc, char** argv )
 	std::string resend;
 	int deferAt = 8;// frame at which "+Param=value" is applied ("@deferAt=N"); "++" one frame later
 	std::vector< std::string > resendOnly;// "@resend=stale:A1 Preset;A1 Mode" limits the re-sent parameters
-	// "@ramp=Param:from:to": animates a parameter linearly over all frames (host-side animation)
-	std::string rampName;
-	float rampFrom = 0, rampTo = 0;
+	// "@ramp=Param:from:to": animates a parameter linearly over all frames (host-side animation); repeatable
+	struct Ramp
+	{
+		std::string name;
+		float from, to;
+	};
+	std::vector< Ramp > ramps;
 	// "@dump=dir": writes every frame as dir/fNNN.png
 	std::string dumpDir;
 	std::vector< std::string > tracePrint;// "@trace=A1 Spread,...": print values every frame
@@ -324,9 +328,7 @@ int main( int argc, char** argv )
 		if( key == "@ramp" )
 		{
 			size_t c1 = val.find( ':' ), c2 = val.rfind( ':' );
-			rampName  = val.substr( 0, c1 );
-			rampFrom  = (float)std::atof( val.substr( c1 + 1, c2 - c1 - 1 ).c_str() );
-			rampTo    = (float)std::atof( val.substr( c2 + 1 ).c_str() );
+			ramps.push_back( Ramp{ val.substr( 0, c1 ), (float)std::atof( val.substr( c1 + 1, c2 - c1 - 1 ).c_str() ), (float)std::atof( val.substr( c2 + 1 ).c_str() ) } );
 			continue;
 		}
 		if( key == "@frames" )
@@ -395,13 +397,14 @@ int main( int argc, char** argv )
 		SetBeatinfoStruct beat{ 120.0f, (float)std::fmod( t * 0.5, 1.0 ) };
 		call( FF_SET_BEATINFO, ptr( &beat ), inst );
 
-		if( !rampName.empty() && f >= 10 )
-		{
-			const float k = frames > 11 ? float( f - 10 ) / float( frames - 11 ) : 1.0f;
-			char v[ 32 ];
-			std::snprintf( v, sizeof( v ), "%g", rampFrom + ( rampTo - rampFrom ) * k );
-			setParam( rampName, v );
-		}
+		for( const Ramp& r : ramps )
+			if( f >= 10 )
+			{
+				const float k = frames > 11 ? float( f - 10 ) / float( frames - 11 ) : 1.0f;
+				char v[ 32 ];
+				std::snprintf( v, sizeof( v ), "%g", r.from + ( r.to - r.from ) * k );
+				setParam( r.name, v );
+			}
 		if( !resend.empty() )
 		{
 			if( resend == "sync" )

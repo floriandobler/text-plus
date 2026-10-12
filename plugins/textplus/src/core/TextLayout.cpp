@@ -49,6 +49,8 @@ std::vector< ShapedPara > shape( const FontFace& mainFace, const LayoutParams& p
 	};
 	if( !p.kerning )
 		addFeature( "kern=0" );
+	if( p.tabularNumbers )
+		addFeature( "tnum=1" );
 	if( !p.ligatures )
 	{
 		addFeature( "liga=0" );
@@ -91,9 +93,13 @@ std::vector< ShapedPara > shape( const FontFace& mainFace, const LayoutParams& p
 					f = cur;
 				else if( cp >= 0x20 && !isBreakingSpace( cp ) )
 				{
-					size_t nextLen     = 1;
-					const bool vs16    = i + len < para.size() && decodeUtf8At( para, i + len, &nextLen ) == 0xFE0F;
-					const bool emojiPr = isEmojiPresentation( cp ) || ( vs16 && cp > 0x7F );
+					// Emoji presentation: pictographs, anything followed by VS16 (U+FE0F)
+					// except plain ASCII, and keycaps ("1" VS16 U+20E3).
+					size_t nextLen        = 1, afterLen = 1;
+					const uint32_t next   = i + len < para.size() ? decodeUtf8At( para, i + len, &nextLen ) : 0;
+					const uint32_t after  = i + len + nextLen < para.size() ? decodeUtf8At( para, i + len + nextLen, &afterLen ) : 0;
+					const bool keycap     = next == 0x20E3 || ( next == 0xFE0F && after == 0x20E3 );
+					const bool emojiPr    = isEmojiPresentation( cp ) || ( next == 0xFE0F && cp > 0x7F ) || keycap;
 					if( emojiPr || !face.hasGlyph( cp ) )
 					{
 						if( emojiPr )

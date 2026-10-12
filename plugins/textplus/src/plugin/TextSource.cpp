@@ -859,7 +859,10 @@ FFResult TextSource::SetTime( double time )
 	// replay slide animations, restart tickers and timers that start with the clip.
 	if( lastHostTime >= 0.0 && time + 0.05 < lastHostTime )
 		retriggered = true;
+	else if( lastHostTime >= 0.0 )
+		hostDelta += time - lastHostTime;
 	lastHostTime = time;
+	++hostTimeCalls;
 	return CFFGLPlugin::SetTime( time );
 }
 
@@ -1497,6 +1500,7 @@ LayoutParams TextSource::currentLayoutParams( const std::string& t ) const
 		ls.spacingPercent   = values[ lineParam( l, LP_SPACING ) ];
 	}
 	p.kerning   = values[ P_KERNING ] > 0.5f;
+	p.tabularNumbers = source() == SOURCE_CLOCK;// running digits must not make the text jitter
 	p.ligatures = values[ P_LIGATURES ] > 0.5f;
 	// With slides the pipe already separated the slides; inside a block it still breaks lines.
 	p.pipeIsNewline = values[ P_PIPE_NEWLINE ] > 0.5f;
@@ -1543,6 +1547,7 @@ Style TextSource::currentStyle() const
 	s.plate           = col( P_PLATE_H );
 	s.plateBorderWidth = values[ P_PLATE_BORDER ];
 	s.plateBorderColor = col( P_PLATE_BORDER_H );
+	s.plateMerge       = values[ P_PLATE_RADIUS ] / 100.0f * values[ P_SIZE ];// fillets as round as the corners
 	s.edgeSoftness    = values[ P_EDGE ];
 	return s;
 }
@@ -1580,14 +1585,17 @@ FFResult TextSource::ProcessOpenGL( ProcessOpenGLStruct* pGL )
 		if( lineFonts[ l ].dirty )
 			resolveLineFont( l );
 
-	// Clip start (first frame, or the host time jumped back = re-triggered)
+	// Clip start (first frame, or the host time jumped back = re-triggered).
+	// Tickers and rolls move with the host's time when it sends one (a paused
+	// clip pauses them), else with the wall clock; never while not rendered.
 	const double now = wallSeconds();
 	if( lastFrameWall < 0.0 || retriggered )
 		onClipStart();
 	else
-		scrollTime += std::clamp( now - lastFrameWall, 0.0, 0.1 );// paused while the clip is not rendered
+		scrollTime += std::clamp( hostTimeCalls > 2 ? hostDelta : now - lastFrameWall, 0.0, 0.1 );
 	lastFrameWall = now;
 	retriggered   = false;
+	hostDelta     = 0.0;
 
 	instances.clear();
 	plates.clear();

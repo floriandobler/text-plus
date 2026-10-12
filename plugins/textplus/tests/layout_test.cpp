@@ -1,6 +1,9 @@
 // Unit tests for the platform-neutral core: font database, layout, glyph SDFs.
 // Run: ./layout_test [extra-font-file ...]
 #include "core/Animator.h"
+#include "core/Clock.h"
+#include "core/FontFallback.h"
+#include "core/Utf8.h"
 #include "core/Csv.h"
 #include "core/FontDatabase.h"
 #include "core/FontFace.h"
@@ -25,6 +28,14 @@ static int g_failures = 0;
 			std::printf( "\n" );                             \
 		}                                                    \
 	} while( 0 )
+
+static bool r_lines_ok( const LayoutResult& r )
+{
+	for( const LineBox& lb : r.lines )
+		if( !( lb.top < lb.baseline && lb.baseline < lb.bottom && lb.left <= lb.right && lb.right <= lb.penEnd + 0.01f ) )
+			return false;
+	return !r.lines.empty();
+}
 
 static float firstGlyphX( const LayoutResult& r, int line )
 {
@@ -354,6 +365,130 @@ int main( int argc, char** argv )
 		CHECK( toUtf8( "M\xFCller \x80" ) == "M\xC3\xBCller \xE2\x82\xAC" && toUtf8( "\xEF\xBB\xBFM\xC3\xBCller" ) == "M\xC3\xBCller", "csv: Windows-1252 and UTF-8 BOM" );
 		CHECK( isCsvPath( "/x/Namen.CSV" ) && !isCsvPath( "/x/a.txt" ), "csv: path detection" );
 		std::printf( "ok   csv\n" );
+	}
+
+	// Clock & timer formatting
+	{
+		CHECK( formatDuration( 90, TimeFormat::Auto, true ) == "1:30", "duration auto -> %s", formatDuration( 90, TimeFormat::Auto, true ).c_str() );
+		CHECK( formatDuration( 3725, TimeFormat::Auto, true ) == "1:02:05", "duration auto with hours" );
+		CHECK( formatDuration( 89.2, TimeFormat::MMSS, true ) == "01:30", "countdown rounds up" );
+		CHECK( formatDuration( 89.8, TimeFormat::MMSS, false ) == "01:29", "stopwatch rounds down" );
+		CHECK( formatDuration( 0.04, TimeFormat::HHMMSS, true ) == "00:00:01", "last fraction of a second still shows 1" );
+		CHECK( formatDuration( -12, TimeFormat::Auto, false ) == "-0:12", "overtime -> %s", formatDuration( -12, TimeFormat::Auto, false ).c_str() );
+		CHECK( formatDuration( 7384, TimeFormat::MMSS, false ) == "123:04", "minutes beyond 59" );
+		CHECK( formatDuration( 65.45, TimeFormat::MMSSTenths, false ) == "01:05.4", "tenths -> %s", formatDuration( 65.45, TimeFormat::MMSSTenths, false ).c_str() );
+		CHECK( formatDuration( 303, TimeFormat::Seconds, false ) == "303", "seconds" );
+		CHECK( formatTimeOfDay( 9 * 3600 + 5 * 60 + 3, TimeFormat::HHMMSS ) == "09:05:03" && formatTimeOfDay( 9 * 3600 + 5 * 60, TimeFormat::Auto ) == "09:05", "time of day" );
+		CHECK( formatNumber( 12840.5, 1, NumberStyle::Dot ) == "12.840,5" && formatNumber( 1234567, 0, NumberStyle::Comma ) == "1,234,567", "numbers -> %s", formatNumber( 12840.5, 1, NumberStyle::Dot ).c_str() );
+		CHECK( formatNumber( -0.001, 1, NumberStyle::Plain ) == "0.0" && formatNumber( -5, 0, NumberStyle::Plain ) == "-5", "number sign" );
+		double v = 0;
+		CHECK( parseDuration( "5:00", v ) && v == 300, "duration m:ss" );
+		CHECK( parseDuration( "1:30:00", v ) && v == 5400, "duration h:mm:ss" );
+		CHECK( parseDuration( "90", v ) && v == 90 && parseDuration( "1h30m", v ) && v == 5400 && parseDuration( "2,5m", v ) && v == 150, "duration units" );
+		CHECK( !parseDuration( "abc", v ) && !parseDuration( "", v ), "duration rejects garbage" );
+		CHECK( parseTimeOfDay( "20:00", v ) && v == 72000 && parseTimeOfDay( "8:15:30", v ) && v == 29730 && !parseTimeOfDay( "25:00", v ), "time of day parse" );
+		LocalTime lt;
+		lt.secondsOfDay = 23 * 3600.0;
+		CHECK( secondsUntil( 3600.0, lt ) == 7200.0, "target after midnight is tonight" );
+		lt.secondsOfDay = 3600.0;
+		CHECK( secondsUntil( 23 * 3600.0, lt ) == -7200.0, "target late last night is over" );
+		lt.day = 3;
+		lt.month = 4;
+		lt.year = 2026;
+		lt.secondsOfDay = 13 * 3600 + 7 * 60;
+		CHECK( expandTimeTemplate( "Doors {timer} at {time}, {date}", "5:00", lt ) == "Doors 5:00 at 13:07, 03.04.2026", "template -> %s",
+			   expandTimeTemplate( "Doors {timer} at {time}, {date}", "5:00", lt ).c_str() );
+		CHECK( expandTimeTemplate( "Text+", "5:00", lt ) == "5:00", "no placeholder: timer alone" );
+		std::printf( "ok   clock\n" );
+	}
+
+	// Case
+	{
+		CHECK( applyCase( "Straße ärger ÿ", TextCase::Upper ) == "STRASSE ÄRGER Ÿ", "upper -> %s", applyCase( "Straße ärger ÿ", TextCase::Upper ).c_str() );
+		CHECK( applyCase( "ÉCOLE ΩMEGA ПРИВЕТ İ", TextCase::Lower ) == "école ωmega привет i", "lower -> %s", applyCase( "ÉCOLE ΩMEGA ПРИВЕТ İ", TextCase::Lower ).c_str() );
+		CHECK( applyCase( "a\\nb {#ff00aa}x{/}", TextCase::Upper ) == "A\\nB {#ff00aa}X{/}", "escapes and tags kept -> %s", applyCase( "a\\nb {#ff00aa}x{/}", TextCase::Upper ).c_str() );
+		std::printf( "ok   case\n" );
+	}
+
+	// Animator: Sequence In/Out, wipe, scramble
+	{
+		LayoutParams ap;
+		ap.sizePx = 100;
+		ap.text   = "ABCD";
+		LayoutResult r = layoutText( *face, ap );
+		auto run = [ & ]( AnimatorParams a ) {
+			std::vector< GlyphState > st;
+			initGlyphStates( r, st );
+			applyAnimator( r, a, st );
+			return st;
+		};
+		AnimatorParams a;
+		a.mode    = AnimMode::SequenceInOut;
+		a.opacity = 0.0f;
+		a.spread  = 1.0f;
+		a.ease    = AnimEase::Linear;
+		a.hold    = 0.5f;
+		a.progress = 0.0f;
+		CHECK( run( a )[ 0 ].alpha < 0.01f, "in/out starts away" );
+		a.progress = 0.5f;
+		bool allIn = true;
+		for( auto& s : run( a ) )
+			allIn = allIn && s.alpha > 0.99f;
+		CHECK( allIn, "in/out at rest in the middle" );
+		a.progress = 1.0f;
+		CHECK( run( a )[ 3 ].alpha < 0.01f, "in/out ends away" );
+		a.progress = 0.85f;
+		auto mid = run( a );
+		CHECK( mid[ 0 ].alpha < mid[ 3 ].alpha, "first in, first out" );
+
+		AnimatorParams w;
+		w.mode     = AnimMode::Constant;
+		w.progress = 0.5f;
+		w.wipe     = 1.0f;
+		w.unit     = AnimUnit::Line;
+		w.wipeFrom = WipeFrom::Left;
+		auto ws    = run( w );
+		const float lineL = r.lines[ 0 ].left, lineR = r.glyphs.back().x + r.glyphs.back().advance;
+		CHECK( std::fabs( ws[ 0 ].clipX1 - ( lineL + 0.5f * ( lineR - lineL ) ) ) < 1.0f && ws[ 0 ].clipX0 < -1e8f, "wipe from left: half the line -> %f", ws[ 0 ].clipX1 );
+		w.wipeFrom = WipeFrom::Center;
+		ws         = run( w );
+		CHECK( ws[ 0 ].clipX0 > lineL && ws[ 0 ].clipX1 < lineR, "wipe from centre" );
+		w.progress = 0.0f;
+		CHECK( run( w )[ 0 ].clipX1 > 1e8f, "no wipe at rest" );
+
+		AnimatorParams sc;
+		sc.mode     = AnimMode::Constant;
+		sc.progress = 1.0f;
+		sc.scramble = 1.0f;
+		bool allScrambled = true;
+		for( auto& s : run( sc ) )
+			allScrambled = allScrambled && s.scramble != 0;
+		CHECK( allScrambled, "scramble 100%% away" );
+		sc.progress = 0.0f;
+		CHECK( run( sc )[ 0 ].scramble == 0, "no scramble at rest" );
+		std::printf( "ok   animator in/out, wipe, scramble\n" );
+	}
+
+	// Font fallback: emoji from the embedded font, missing scripts from other fonts
+	{
+		auto inter = db.resolve( "Inter / Regular" );
+		auto iface = inter ? FontFace::get( *inter ) : nullptr;
+		CHECK( emojiFace() && emojiFace()->hasGlyph( 0x1F600 ), "embedded emoji font" );
+		if( iface )
+		{
+			LayoutParams fp;
+			fp.sizePx = 100;
+			fp.text   = "A\xF0\x9F\x98\x80\xD7\xA9";// A, grinning face, Hebrew shin
+			LayoutResult fr = layoutText( *iface, fp );
+			CHECK( fr.glyphs.size() == 3 && fr.glyphs[ 0 ].face == nullptr && fr.glyphs[ 1 ].face == emojiFace().get() && fr.glyphs[ 2 ].face != nullptr &&
+					   fr.glyphs[ 2 ].glyphId != 0,
+				   "fallback faces (%zu glyphs)", fr.glyphs.size() );
+			fp.text = "1\xEF\xB8\x8F\xE2\x83\xA3";// keycap 1
+			fr      = layoutText( *iface, fp );
+			CHECK( !fr.glyphs.empty() && fr.glyphs[ 0 ].face == emojiFace().get(), "keycap from the emoji font" );
+			CHECK( r_lines_ok( fr ), "line boxes" );
+		}
+		std::printf( "ok   font fallback\n" );
 	}
 
 	std::printf( g_failures ? "\n%d FAILURES\n" : "\nALL TESTS PASSED\n", g_failures );
