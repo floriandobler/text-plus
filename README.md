@@ -1,3 +1,6 @@
+# Note
+A version 1.1 is coming soon which includes an optimized user interface. This update could break existing implementations.
+
 <p align="center"><img src="docs/images/hero.png" alt="Text+ — text source for Resolume" width="100%"></p>
 
 # Text+
