@@ -31,11 +31,11 @@ CFFGLPluginInfo PluginInfo( PluginFactory< TextSource >,// create method
 							"Text+",                     // name (sorts next to Resolume's own Text sources)
 							2,                           // API major
 							1,                           // API minor
-							0,                           // plugin major
-							2,                           // plugin minor
+							1,                           // plugin major
+							0,                           // plugin minor
 							FF_SOURCE,
 							"Text source with distance-field outlines, shadows, glow and per-character animation",
-							"Text+ 1.0",
+							"Text+ 1.0.1",
 							0, nullptr, initialiseLibrary, nullptr );
 
 const char* kGroupText     = "Text";

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <mutex>
 #include <string>
 
@@ -81,11 +82,20 @@ float glyphDistancePx()
 }
 )GLSL";
 
-// Layer k keeps, per pixel, the k-th nearest glyph: the depth test keeps the
-// smallest distance, glyphs already stored in layers 0..k-1 are skipped.
+// Two ways to fill the layers:
+//  uPeelMode 0 (same opacity everywhere, colours differ): layer k keeps the
+//    k-th NEAREST glyph (depth = distance, glyphs of earlier layers skipped).
+//  uPeelMode 1 (opacities differ): layer k keeps the most OPAQUE glyph among
+//    those strictly closer than layer k-1's glyph, nearest first on ties. The
+//    layers then hold exactly the glyphs that matter for the opacity integral
+//    (the front "more opaque or closer"); a glyph that is both farther and
+//    less opaque than another can never show. However many glyphs overlap, an
+//    opaque glyph is never pushed out by fainter neighbours.
 const std::string kFieldFS = std::string( "#version 410 core\n" ) + kGlyphDistance + R"GLSL(
 uniform float uDepthRange;
+uniform float uMaxReach;// px: beyond this no effect can show, so the glyph takes no layer
 uniform int uLayer;
+uniform int uPeelMode;
 uniform sampler2D uPrev0;
 uniform sampler2D uPrev1;
 uniform sampler2D uPrev2;
@@ -93,18 +103,34 @@ layout( location = 0 ) out vec4 oA;// distance, glyph id, opacity, tint amount
 layout( location = 1 ) out vec4 oB;// tint colour
 void main()
 {
+	float dist = glyphDistancePx();
+	if( dist > uMaxReach )
+		discard;
 	if( uLayer > 0 )
 	{
 		ivec2 ip = ivec2( gl_FragCoord.xy );
-		if( texelFetch( uPrev0, ip, 0 ).g == vId )
+		vec4 p0  = texelFetch( uPrev0, ip, 0 );
+		vec4 p1  = uLayer > 1 ? texelFetch( uPrev1, ip, 0 ) : vec4( 1.0e4, -1.0, 0.0, 0.0 );
+		vec4 p2  = uLayer > 2 ? texelFetch( uPrev2, ip, 0 ) : vec4( 1.0e4, -1.0, 0.0, 0.0 );
+		if( p0.g == vId || p1.g == vId || p2.g == vId )
 			discard;
-		if( uLayer > 1 && texelFetch( uPrev1, ip, 0 ).g == vId )
-			discard;
-		if( uLayer > 2 && texelFetch( uPrev2, ip, 0 ).g == vId )
-			discard;
+		if( uPeelMode == 1 )
+		{
+			// strictly closer than the previous layer's glyph (stored as half float)
+			float prevD = uLayer == 1 ? p0.r : uLayer == 2 ? p1.r : p2.r;
+			if( dist >= prevD - max( 0.02, abs( prevD ) * 0.002 ) )
+				discard;
+		}
 	}
-	float dist   = glyphDistancePx();
-	gl_FragDepth = clamp( dist / uDepthRange * 0.5 + 0.5, 0.0, 1.0 );
+	float dn = clamp( dist / uDepthRange * 0.5 + 0.5, 0.0, 0.999 );
+	if( uPeelMode == 1 )
+	{
+		// opacity first (more opaque = smaller depth), distance second
+		float aq     = floor( ( 1.0 - clamp( vMisc.x, 0.0, 1.0 ) ) * 255.0 + 0.5 );
+		gl_FragDepth = ( aq + dn ) / 257.0;
+	}
+	else
+		gl_FragDepth = dn;
 	oA           = vec4( dist, vId, vMisc.x, vTint.a );
 	oB           = vec4( vTint.rgb, 1.0 );
 }
@@ -796,7 +822,9 @@ void TextRenderer::render( const FFGLViewportStruct& vp, GLuint hostFbo, const s
 	glUniform1f( glGetUniformLocation( fp, "uSize" ), t.sizePx );
 	glUniform2f( glGetUniformLocation( fp, "uAtlasSize" ), (float)atlasSize, (float)atlasSize );
 	glUniform1f( glGetUniformLocation( fp, "uSharpCorners" ), style.sharpCorners ? 1.0f : 0.0f );
-	glUniform1f( glGetUniformLocation( fp, "uDepthRange" ), 16384.0f );
+	glUniform1f( glGetUniformLocation( fp, "uDepthRange" ), 4096.0f );
+	glUniform1i( glGetUniformLocation( fp, "uPeelMode" ), alphaVaries ? 1 : 0 );
+	glUniform1f( glGetUniformLocation( fp, "uMaxReach" ), style.reach() + 2.0f );
 	glUniform1i( glGetUniformLocation( fp, "uAtlas" ), 0 );
 	glUniform1i( glGetUniformLocation( fp, "uPrev0" ), 1 );
 	glUniform1i( glGetUniformLocation( fp, "uPrev1" ), 2 );

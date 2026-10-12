@@ -121,8 +121,8 @@ src/core/      platform-neutral text engine (no FFGL, no OpenGL)
 src/render/    OpenGL 4.1 core
   GlyphAtlas     16-bit float atlas, grows on demand
   TextRenderer   field passes: distance field of the union of all glyphs (depth test keeps
-                 the nearest); when opacities differ, the 4 nearest glyphs per pixel
-                 (depth peeling). Composite: fill, outlines, shadow, glow, with opacity
+                 the nearest); when opacities differ, up to 4 glyphs per pixel
+                 along the opacity order (depth peeling). Composite: fill, outlines, shadow, glow, with opacity
                  integrated as a threshold so fading glyphs leave merged outlines smoothly.
 src/plugin/    FFGL adapter: parameters, presets, slides, dynamic menus, host quirks
 tests/         unit tests, headless FFGL host (Linux/EGL), randomised parameter test
