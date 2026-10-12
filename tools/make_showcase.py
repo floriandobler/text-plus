@@ -4,7 +4,8 @@
 Usage: tools/make_showcase.py <fonts-dir> [out-dir]
 <fonts-dir> holds a few Google Fonts (OFL): Anton, Bebas Neue, Space Grotesk,
 Archivo Black, Righteous (e.g. a sparse checkout of github.com/google/fonts, ofl/...).
-Inter must be installed system-wide. Needs Pillow.
+Inter must be installed system-wide. Needs Pillow. Run from the repository root
+after ./scripts/run_tests_linux.sh (uses build/ffgl_test_host and build/TextPlus.so).
 """
 import glob, os, subprocess, sys, tempfile
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
@@ -134,4 +135,52 @@ gif('anim_wave.gif', 960, 300, ['Text=WAVE OF COLOUR', f'Font File={anton}', 'Si
                                 '@ramp=A1 Progress:0:2'], 70, step=2)
 gif('anim_typewriter.gif', 960, 240, ['Text=Typewriter, one character at a time.', 'Font=Inter / Medium', 'Size=56', 'Align=0', 'Anchor H=1',
                                       'Position X=-430', 'A1 Mode=1', 'A1 Opacity=0', 'A1 Spread=0', '@ramp=A1 Progress:0:1'], 80, step=2)
+
+# --- 1.1 ---
+# Plates: a lower third on melting line plates (slant, border, shadow)
+W, H = 1600, 460
+fg = render(W, H, 'Text=Anna Musterfrau', 'Text 2=LIGHTING DESIGN', 'Font=Inter / Black', 'Size=96', 'Align=0', 'Anchor H=1',
+            'Position X=-620', 'Position Y=-20', 'L2 Style=1', 'L2 Font=SemiBold', 'L2 Size=42', 'L2 Tracking=160', 'L2 Spacing=26',
+            'Plate=2', 'Plate Color=0.6', 'Plate Color_Sat=0.85', 'Plate Color_Bri=0.6', 'Plate Color_Alpha=0.95', 'Plate Radius=12',
+            'Plate Slant=-10', 'Plate Border=4', 'Plate Border Color_Bri=1', 'Shadow Distance=10', 'Shadow Softness=24', 'Shadow Color_Alpha=0.7')
+over(background(W, H, (24, 34, 44), (14, 18, 26)), fg).save(f'{OUT}/plates.png')
+
+gif('anim_lower_third.gif', 1280, 360, ['Text=Anna Musterfrau', 'Text 2=LIGHTING DESIGN', 'Font=Inter / Black', 'Size=80', 'Align=0',
+                                        'Anchor H=1', 'Position X=-560', 'L2 Style=1', 'L2 Font=SemiBold', 'L2 Size=42', 'L2 Tracking=160',
+                                        'L2 Spacing=24', 'Plate Color=0.6', 'Plate Color_Sat=0.85', 'Plate Color_Bri=0.6', 'Plate Radius=10',
+                                        '+A1 Preset=15', '@ramp=A1 Progress:0:1', '@ramp=A2 Progress:-0.45:1'], 70, step=2,
+    bgcolors=((24, 34, 44), (14, 18, 26)))
+
+gif('anim_ticker.gif', 1280, 160, ['Display=3', 'Text=+++ Text+ 1.1 brings tickers, rolls, clocks and plates', 'Text 2=Doors open at 20:00',
+                                   'Font=Inter / Bold', 'Size=56', 'Scroll Speed=260', 'Plate=1', 'Plate Color=0.0', 'Plate Color_Sat=0.85',
+                                   'Plate Color_Bri=0.7', 'Plate Padding Y=18', 'Edge Fade=80', 'Separator=   •   '], 90, step=2,
+    bgcolors=((20, 22, 30), (30, 30, 40)))
+
+gif('anim_decode.gif', 960, 240, ['Text=DECODING', f'Font File={grotesk}', 'Font=Space Grotesk / Bold', 'Size=130', 'Outline Width=4',
+                                  'Glow Radius=26', 'Glow Color=0.38', 'Glow Strength=0.7', '+A1 Preset=14', '@ramp=A1 Progress:0:1'], 80, step=2)
+
+# Clock & timer
+W, H = 1600, 360
+bg = background(W, H)
+fg = render(800, H, 'Source=2', 'Timer Mode=2', 'Duration=4:59', 'Text=DOORS OPEN IN', 'Text 2={timer}', f'Font File={anton}', 'Size=70',
+            'Tracking=60', 'L2 Style=1', 'L2 Size=260', 'L2 Tracking=-60', 'Leading=105', 'Fill Color_Bri=1', 'Outline Width=6', 'Outline Color_Bri=0.05', frames=6)
+fg2 = render(800, H, 'Source=2', 'Timer Mode=4', 'Count From=0', 'Count To=12840', 'Count=1', 'Number Format=1', 'Text={timer}',
+             'Text 2=VISITORS TODAY', f'Font File={archivo}', 'Size=120', 'L2 Style=1', 'L2 Size=30', 'L2 Tracking=200', 'L2 Spacing=10',
+             'Fill Mode=1', 'Fill Color=0.12', 'Fill Color_Sat=0.85', 'Fill Color 2=0.95', 'Fill Color 2_Sat=0.8', 'Gradient Angle=-90', frames=6)
+bg.alpha_composite(fg, (0, 0))
+bg.alpha_composite(fg2, (800, 0))
+bg.convert('RGB').save(f'{OUT}/clock.png')
+
+# Inner glow / inner shadow | emoji and other scripts through font fallback
+W, H = 1600, 380
+bg = background(W, H, (30, 30, 36), (60, 40, 30))
+fg = render(800, H, 'Text=INNER', f'Font File={archivo}', 'Size=170', 'Fill Color=0.08', 'Fill Color_Sat=0.9', 'Inner Glow Radius=22',
+            'Inner Glow Color=0.14', 'Inner Glow Color_Sat=0.35', 'Inner Shadow Distance=9', 'Inner Shadow Softness=8', 'Shadow Angle=135',
+            'Outline Width=5', 'Outline Color_Bri=0.08')
+fg2 = render(800, H, 'Text=Emoji 🎉 👍🏽 ☕', 'Text 2=Ελλάδα · Привет · שלום', 'Font=Inter / Bold', 'Size=72', 'L2 Style=1', 'L2 Size=70',
+             'Outline Width=6', 'Outline Color=0.6', 'Outline Color_Sat=0.8', 'Outline Color_Bri=0.55', frames=30)
+bg.alpha_composite(fg, (0, 0))
+bg.alpha_composite(fg2, (800, 0))
+bg.convert('RGB').save(f'{OUT}/inner_and_fallback.png')
+
 print('images in', OUT)

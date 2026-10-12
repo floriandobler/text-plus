@@ -447,6 +447,23 @@ int main( int argc, char** argv )
 	glGenVertexArrays( 1, &hostVao );
 	glBindVertexArray( hostVao );
 
+	// Wait until the plugin has its font list (the first scan on a fresh machine
+	// can take seconds); frames rendered meanwhile do not count.
+	{
+		auto fam = byName.find( "Family" );
+		const auto t0 = std::chrono::steady_clock::now();
+		while( fam != byName.end() && call( FF_GET_NUM_PARAMETER_ELEMENTS, u( fam->second ), inst ).UIntValue <= 1 &&
+			   std::chrono::steady_clock::now() - t0 < std::chrono::seconds( 90 ) )
+		{
+			ProcessOpenGLStruct pgl{ 0, nullptr, fbo };
+			call( FF_PROCESS_OPENGL, ptr( &pgl ), inst );
+			std::this_thread::sleep_for( std::chrono::milliseconds( 20 ) );
+		}
+		const double waited = std::chrono::duration< double >( std::chrono::steady_clock::now() - t0 ).count();
+		if( waited > 0.5 )
+			std::printf( "  waited %.1f s for the font list\n", waited );
+	}
+
 	std::vector< unsigned char > pixels( (size_t)W * H * 4 ), previous;
 	int stable = 0, stateErrors = 0;
 	double frameMs = 0, firstFrameMs = -1;
