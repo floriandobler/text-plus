@@ -11,7 +11,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DTEXTPLUS_BUILD_TESTS=ON
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DPLUS_BUILD_TESTS=ON
 cmake --build build
 
 ./build/layout_test
@@ -33,7 +33,7 @@ grep -q "A1 Spread *= 1 " out/preset_resend.txt && grep -q "A1 Offset Y *= -40 "
 $H $P out/slide_wrap.png 640 200 "Text=Eins|Zwei|Drei" "Slides=1" "Slide=0.9" "+Next Slide=1" "@resend=stale:Slide" @print=Slide | tee out/slide_wrap.txt
 grep -q "(1 / 3)" out/slide_wrap.txt || { echo "ERROR: slide wrap"; exit 1; }
 # CSV: one slide per row, cells become lines, header skipped
-$H $P out/csv_slide2.png 960 300 "Text File=tests/data/lower_thirds.csv" "Font=Inter / Bold" "Size=80" "Slide=0.9" @print=Slide | tee out/csv.txt
+$H $P out/csv_slide2.png 960 300 "Text File=plugins/textplus/tests/data/lower_thirds.csv" "Font=Inter / Bold" "Size=80" "Slide=0.9" @print=Slide | tee out/csv.txt
 grep -q "(2 / 2)" out/csv.txt || { echo "ERROR: CSV slides"; exit 1; }
 # Wave: Progress is the phase
 $H $P out/wave_phase.png 960 240 "Text=Wave Phase" "Font=Inter / Black" "Size=110" "+A1 Preset=9" "++A1 Progress=0.25"
@@ -49,5 +49,5 @@ grep -q "(Medium)" out/lower_third.txt && grep -q "(Light Italic)" out/lower_thi
 $H $P out/wrap_box.png 1280 720 "Text=Distance fields keep every outline outside the letters, at any size, with shadows and glow computed in one pass." "Font=Inter / Regular" "Size=64" "Wrap=1" "Box Width=900" "Align=3"
 $H $P out/menus.png 320 180 "Font=Inter / Regular" "+Style=3" @frames=16
 # Robustness: random parameter combinations (no crash, GL error or state leak)
-python3 tests/fuzz_params.py $H $P 20
+python3 plugins/textplus/tests/fuzz_params.py $H $P 20
 echo "Images in out/"

@@ -1,0 +1,16 @@
+# Headless FFGL host: loads a plugin like Resolume does (plugMain), renders
+# frames into an FBO and writes PNGs. Linux: EGL + Mesa, macOS: CGL, Windows: WGL.
+add_executable(ffgl_test_host ffgl_test_host.cpp stb_impl.cpp)
+target_include_directories(ffgl_test_host PRIVATE ${FFGL_SDK_DIR}/source/lib ${CMAKE_CURRENT_SOURCE_DIR})
+set_target_properties(ffgl_test_host PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${PROJECT_BINARY_DIR} RUNTIME_OUTPUT_DIRECTORY_RELEASE ${PROJECT_BINARY_DIR})
+if(APPLE)
+    target_compile_definitions(ffgl_test_host PRIVATE GL_SILENCE_DEPRECATION)
+    target_link_libraries(ffgl_test_host PRIVATE "-framework OpenGL" ${CMAKE_DL_LIBS})
+elseif(WIN32)
+    target_compile_definitions(ffgl_test_host PRIVATE GLEW_STATIC)
+    target_include_directories(ffgl_test_host PRIVATE ${FFGL_SDK_DIR}/deps/glew-2.1.0/include)
+    target_link_libraries(ffgl_test_host PRIVATE ${FFGL_SDK_DIR}/deps/glew-2.1.0/lib/Release/x64/glew32s.lib opengl32 gdi32 user32)
+else()
+    target_link_libraries(ffgl_test_host PRIVATE GLEW::GLEW OpenGL::GL EGL ${CMAKE_DL_LIBS})
+endif()
+add_dependencies(ffgl_test_host TextPlus)

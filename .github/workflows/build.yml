@@ -34,7 +34,7 @@ jobs:
 
       - name: Build
         run: |
-          cmake -S . -B build-mac -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" -DTEXTPLUS_BUILD_TESTS=ON
+          cmake -S . -B build-mac -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" -DPLUS_BUILD_TESTS=ON
           cmake --build build-mac --config Release --parallel
           codesign --force --sign - build-mac/TextPlus.bundle
           lipo -info build-mac/TextPlus.bundle/Contents/MacOS/TextPlus
@@ -50,12 +50,12 @@ jobs:
           ./build-mac/ffgl_test_host build-mac/TextPlus.bundle smoke/fade_layers.png 1280 360 \
             "Text=merged outlines" "Size=120" "Outline Width=16" "A1 Mode=1" "A1 Opacity=0" "A1 Spread=2" "A1 Progress=0.6" @expectInk=1
           ./build-mac/ffgl_test_host build-mac/TextPlus.bundle smoke/csv.png 960 300 \
-            "Text File=tests/data/lower_thirds.csv" "Slide=0.9" "L2 Style=1" "L2 Size=50" @expectInk=1 @print=Slide
-          python3 tests/fuzz_params.py build-mac/ffgl_test_host build-mac/TextPlus.bundle 15
+            "Text File=plugins/textplus/tests/data/lower_thirds.csv" "Slide=0.9" "L2 Style=1" "L2 Size=50" @expectInk=1 @print=Slide
+          python3 plugins/textplus/tests/fuzz_params.py build-mac/ffgl_test_host build-mac/TextPlus.bundle 15
 
       - name: Package
         run: |
-          VERSION=$(sed -nE 's/^project\(TextPlus VERSION ([0-9.]+).*/\1/p' CMakeLists.txt)
+          VERSION=$(sed -nE 's/^project\(ResolumePlus VERSION ([0-9.]+).*/\1/p' CMakeLists.txt)
           mkdir -p dist/TextPlus
           cp -R build-mac/TextPlus.bundle dist/TextPlus/
           cp LICENSE THIRD_PARTY_NOTICES.md dist/TextPlus/
