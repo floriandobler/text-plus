@@ -97,37 +97,6 @@ Requires macOS 11 or later and Resolume Arena / Avenue 7 (developed and tested w
 2. Copy `TextPlus.dll` to `Documents\Resolume Arena\Extra Effects` (or Resolume Avenue).
 3. Restart Resolume.
 
-## Quick start
-
-| You want | Do this |
-| --- | --- |
-| A big outlined title | *Size* 200, *Outline Width* 30, *Outline 2 Width* 12, *Glow Radius* 40 |
-| A lower third | *Text* = name, *+ Line*, *Text 2* = role; *Line 2 → L2 Style* = Own, *L2 Size* 45 %; *Align* Left; *A1 Preset* = Lower Third In |
-| Lower thirds from a spreadsheet | Export `Name;Role` as CSV, *Source* = File, choose it as *Text File*; step with *Next Slide* or BPM-sync *Slide*; *Replay on Slide Change* = 2 |
-| A countdown | *Source* = Clock & Timer, *Timer Mode* = Countdown, *Duration* = `10:00`, *Text* = `Doors open in {timer}` |
-| A news ticker | *Display* = Ticker, *Scroll Speed* 200, *Plate* = Block, *Wrap* = Box to limit the width |
-| Credits | Lines in a text file, *Source* = File, *Display* = Roll, *Roll Loop* off |
-| Song lyrics on the beat | *Display* = Slides: Lines, one line per row in a text file, BPM-sync *Slide* |
-| A looping wave | *A1 Preset* = Wave, animate *A1 Progress* 0 → 1 with BPM sync (loop) |
-
-## Parameters
-
-Resolume shows the internal parameter names; groups appear in this order. Rows appear only when a menu or switch makes them relevant.
-
-| Group | Parameters |
-| --- | --- |
-| **Text** | *Source* (Input / File / Clock & Timer), *Display* (Static / Slides: Lines / Slides: Blocks / Ticker / Roll), *Text*, *Text 2 … Text 10* (*+ Line* / *− Line*), *Text File* (.txt, .md, .csv, .tsv), *CSV: Skip First Row*; timer: *Timer Mode*, *Target Time*, *Duration*, *Start*, *Stop*, *Reset*, *Start with Clip*, *Time Format*, *At Zero* (Hold 0 / Hide / Count Up), *Count From*, *Count To*, *Count*, *Decimals*, *Number Format*; slides: *Slide* (0–1), *Next Slide*, *Previous Slide*, *Replay on Slide Change* (beats, 0 = off), *Replay Stagger*; ticker / roll: *Scroll Speed* (px/s), *Scroll Position*, *Separator*, *Roll Loop*, *Edge Fade* |
-| **Font** | *Family*, *Style*, *Size* (px), *Font* (stored name, typeable), *Font File* |
-| **Line 2**, **Line 3+** | *Style* (Same as above / Own), *Weight*, *Font*, *Size* (% of main size), *Color* (alpha = how strongly it replaces the fill), *Tracking*, *Spacing* |
-| **Layout** | *Position X / Y* (px from the centre, Y up), *Rotation*, *Align*, *Case* (Tt / TT / tt), *Anchor H*, *Anchor V*, *Wrap* (Off / Box), *Box Width*, *Box Height*, *Auto Fit*, *Tracking* (1/1000 em), *Leading* (%) |
-| **Fill** | *Fill Mode* (Solid / Gradient Block / Gradient Characters), *Fill Color*, *Fill Color 2*, *Gradient Angle* |
-| **Outline** | *Outline Width*, *Outline Position* (Outside / Center / Inside), *Outline Corners* (Round / Sharp), *Outline Color*, *Outline 2 Width*, *Outline 2 Color* |
-| **Plate** | *Plate* (Off / Block / Lines), *Plate Color*, *Plate Padding X / Y* (% of size), *Plate Radius* (% of size), *Plate Slant* (°), *Plate Width* (Fit Text / Equal / Box), *Plate Border* (px, inside), *Plate Border Color* |
-| **Shadow** | *Color*, *Distance* (0 = off), *Angle*, *Softness*, *Spread*, *Inner Shadow Distance* (0 = off), *Inner Shadow Softness*, *Inner Shadow Color* |
-| **Glow** | *Color*, *Radius* (0 = off), *Strength*, *Inner Glow Radius* (0 = off), *Inner Glow Color* |
-| **Animator 1**, **Animator 2** | *Preset*, *Mode*, *Target* (Text / Plate / Text + Plate), *Unit* (Character / Word / Line), *Order*, *Progress*, *Spread*, *Hold* (In/Out), *Ease*, *Offset X / Y*, *Scale*, *Rotation*, *Opacity*, *Wipe*, *Wipe From*, *Scramble*, *Characters*, *Color* (alpha = amount) |
-| **Options** | *\| = New Line*, *Color Tags*, *Kerning*, *Ligatures*, *Edge Softness* |
-
 **How an animator works.** It describes where a unit is when it is "away": offset, scale, rotation, opacity, colour, how much of it is wiped away, how likely it shows a random character. *Sequence In* brings units from away to rest one after another as *Progress* goes 0 → 1; *Spread* is how many units move at once (0 = hard typewriter steps). *Sequence In/Out* brings them in, keeps them at rest for the *Hold* share and takes them out again. For *Wave*, *Progress* is the phase and *Spread* the wavelength; for *Random*, *Progress* runs through a loop of *Spread* random states. Two animators add up.
 
 **Clock & timer placeholders.** `{timer}` is the value of the *Timer Mode*, `{time}` the current time (HH:MM), `{date}` today's date (DD.MM.YYYY). Text without a placeholder shows the timer alone. Countdowns and the stopwatch run in real time; *Start with Clip* restarts them when the clip is triggered. A countdown shows 0:01 until the time is really over.
