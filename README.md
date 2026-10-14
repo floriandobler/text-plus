@@ -103,28 +103,6 @@ Requires macOS 11 or later and Resolume Arena / Avenue 7 (developed and tested w
 
 **Compositions from 1.0** open with the matching settings: *Slides* becomes *Display*, a text file sets *Source* to File.
 
-## How it works
-
-```
-libs/ffglkit/      FFGL plumbing shared by all plugins: parameters with stable menu values,
-                   host quirks (re-sent values), visibility, GL state guard, per-context sharing
-libs/sdfkit/       distance-field shapes with a style stack
-  Atlas              16-bit float MTSDF atlas, grows on demand
-  Renderer           primitives (glyph from the atlas, analytic rounded/slanted box), groups (text,
-                     plate), field passes with depth peeling, one composite pass: fill, outlines,
-                     inner glow/shadow, plates, glow, drop shadow, opacity integrated as a threshold
-plugins/textplus/
-  src/core/          platform-neutral text engine (no FFGL, no OpenGL)
-    FontDatabase       font discovery (CoreText / font folders) + FreeType scan, cached on disk
-    FontFallback       OS fallback (CoreText, DirectWrite), embedded Noto Emoji
-    TextLayout         HarfBuzz shaping in font runs, line styles, wrapping, anchors, line boxes
-    GlyphCache         MTSDF generation with msdfgen in worker threads
-    Animator           per-unit state as a pure function of the parameters (wipe, scramble ...)
-    Clock, Csv, Utf8   timers and number formats, CSV, encodings, case, inline colours
-  src/plugin/        the FFGL source: parameters, sources, displays, plates, presets
-tools/ffgl_test_host headless FFGL host (Linux EGL, macOS CGL, Windows WGL)
-```
-
 ## Building from source
 
 macOS (Xcode Command Line Tools, CMake ≥ 3.20):
