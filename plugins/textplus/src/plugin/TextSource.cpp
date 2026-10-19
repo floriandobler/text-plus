@@ -2725,7 +2725,8 @@ LayoutParams TextSource::currentLayoutParams( const std::string& t ) const
 		ls.spacingPercent   = values[ lineParam( l, LP_SPACING ) ];
 	}
 	p.kerning   = values[ P_KERNING ] > 0.5f;
-	p.tabularNumbers = source() == SOURCE_CLOCK;// running digits must not make the text jitter
+	// Running digits must not make the text jitter: clocks, web data and OSC values
+	p.tabularNumbers = source() == SOURCE_CLOCK || source() == SOURCE_WEB || text.find( "{/" ) != std::string::npos;
 	p.ligatures = values[ P_LIGATURES ] > 0.5f;
 	// With slides the pipe already separated the slides; inside a block it still breaks lines.
 	p.pipeIsNewline = values[ P_PIPE_NEWLINE ] > 0.5f;

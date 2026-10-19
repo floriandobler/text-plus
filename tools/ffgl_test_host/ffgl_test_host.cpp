@@ -249,6 +249,7 @@ int main( int argc, char** argv )
 	double timeSec  = 0.0;
 	std::vector< std::string > printParams;// "@print=A1 Mode,A1 Preset"
 	std::string uiPath;// "@ui=file.txt": writes the panel as Resolume shows it (visible rows, display names)
+	bool withInput = false;// "@input=1": an input texture for effect plugins (Text+ FX)
 	double dt       = 0.0;// seconds per frame; > 0 plays time forward and renders exactly @frames frames
 	std::string bg  = "checker";
 	bool straight   = true;// Text+ outputs straight alpha by default (Resolume's convention)
@@ -402,6 +403,11 @@ int main( int argc, char** argv )
 			uiPath = val;
 			continue;
 		}
+		if( key == "@input" )
+		{
+			withInput = val != "0";
+			continue;
+		}
 		if( key == "@print" )
 		{
 			size_t start = 0;
@@ -452,6 +458,49 @@ int main( int argc, char** argv )
 	GLuint hostVao;
 	glGenVertexArrays( 1, &hostVao );
 	glBindVertexArray( hostVao );
+
+	// Input texture for effects: a colourful test image, premultiplied, in a texture
+	// larger than the image (like hosts that round up to powers of two).
+	GLuint inputTex = 0;
+	FFGLTextureStruct inputStruct{};
+	FFGLTextureStruct* inputList[ 1 ] = { &inputStruct };
+	if( withInput )
+	{
+		int hw = 1, hh = 1;
+		while( hw < W )
+			hw <<= 1;
+		while( hh < H )
+			hh <<= 1;
+		std::vector< unsigned char > img( (size_t)hw * hh * 4, 0 );
+		for( int y = 0; y < H; ++y )
+			for( int x = 0; x < W; ++x )
+			{
+				const float fx = (float)x / W, fy = (float)y / H;
+				const float r = 0.5f + 0.5f * std::sin( 6.2831853f * ( fx * 1.3f + 0.0f ) );
+				const float g = 0.5f + 0.5f * std::sin( 6.2831853f * ( fx * 0.7f + fy * 0.9f + 0.33f ) );
+				const float b = 0.5f + 0.5f * std::sin( 6.2831853f * ( fy * 1.1f + 0.66f ) );
+				const bool stripe = ( ( x / 24 ) + ( y / 24 ) ) % 2 == 0;
+				const float k = stripe ? 1.0f : 0.8f;
+				unsigned char* px = &img[ ( (size_t)y * hw + x ) * 4 ];
+				px[ 0 ] = (unsigned char)( 255 * r * k );
+				px[ 1 ] = (unsigned char)( 255 * g * k );
+				px[ 2 ] = (unsigned char)( 255 * b * k );
+				px[ 3 ] = 255;
+			}
+		glGenTextures( 1, &inputTex );
+		glBindTexture( GL_TEXTURE_2D, inputTex );
+		glTexImage2D( GL_TEXTURE_2D, 0, GL_RGBA8, hw, hh, 0, GL_RGBA, GL_UNSIGNED_BYTE, img.data() );
+		glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR );
+		glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR );
+		glBindTexture( GL_TEXTURE_2D, 0 );
+		inputStruct.Width          = (FFUInt32)W;
+		inputStruct.Height         = (FFUInt32)H;
+		inputStruct.HardwareWidth  = (FFUInt32)hw;
+		inputStruct.HardwareHeight = (FFUInt32)hh;
+		inputStruct.Handle         = inputTex;
+	}
+	const FFUInt32 numInputs = withInput ? 1 : 0;
+	FFGLTextureStruct** inputs = withInput ? inputList : nullptr;
 
 	// Wait until the plugin has its font list (the first scan on a fresh machine
 	// can take seconds); frames rendered meanwhile do not count.
@@ -552,7 +601,7 @@ int main( int argc, char** argv )
 			call( FF_PROCESS_OPENGL, ptr( &opgl ), others[ k ] );
 			glBindFramebuffer( GL_FRAMEBUFFER, fbo );
 		}
-		ProcessOpenGLStruct pgl{ 0, nullptr, fbo };
+		ProcessOpenGLStruct pgl{ numInputs, inputs, fbo };
 		auto t0 = std::chrono::steady_clock::now();
 		call( FF_PROCESS_OPENGL, ptr( &pgl ), inst );
 		glFinish();

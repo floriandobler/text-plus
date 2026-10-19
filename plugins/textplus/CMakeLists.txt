@@ -49,35 +49,39 @@ include(${PROJECT_SOURCE_DIR}/cmake/EmbedFile.cmake)
 embed_files(${CMAKE_CURRENT_BINARY_DIR}/EmbeddedFonts.cpp textplus
     NotoEmoji ${CMAKE_CURRENT_SOURCE_DIR}/resources/NotoEmoji-Regular.ttf)
 
-# FFGL plugin
-add_library(TextPlus MODULE src/plugin/TextSource.cpp)
-target_link_libraries(TextPlus PRIVATE tp_core sdfkit ffglkit)
-target_compile_definitions(TextPlus PRIVATE TEXTPLUS_VERSION="${TEXTPLUS_VERSION}")
-
-if(APPLE)
-    set_target_properties(TextPlus PROPERTIES
-        BUNDLE TRUE
-        BUNDLE_EXTENSION bundle
-        MACOSX_BUNDLE_INFO_PLIST ${CMAKE_CURRENT_SOURCE_DIR}/cmake/Info.plist.in
-        MACOSX_BUNDLE_BUNDLE_NAME "TextPlus"
-        MACOSX_BUNDLE_GUI_IDENTIFIER "de.textplus.ffgl"
-        MACOSX_BUNDLE_BUNDLE_VERSION "${TEXTPLUS_VERSION}"
-        MACOSX_BUNDLE_SHORT_VERSION_STRING "${TEXTPLUS_VERSION}"
-    )
-    target_link_libraries(TextPlus PRIVATE "-Wl,-exported_symbol,_plugMain")
-elseif(WIN32)
-    set_target_properties(TextPlus PROPERTIES PREFIX "" SUFFIX ".dll")
-    target_sources(TextPlus PRIVATE cmake/exports.def)
-else()
-    target_link_libraries(TextPlus PRIVATE "-Wl,--version-script=${CMAKE_CURRENT_SOURCE_DIR}/cmake/exports.map")
-    set_target_properties(TextPlus PROPERTIES PREFIX "")
-endif()
-# Put the plugin where the scripts expect it (build/TextPlus.so|.bundle|.dll)
-set_target_properties(TextPlus PROPERTIES
-    LIBRARY_OUTPUT_DIRECTORY ${PROJECT_BINARY_DIR}
-    LIBRARY_OUTPUT_DIRECTORY_RELEASE ${PROJECT_BINARY_DIR}
-    RUNTIME_OUTPUT_DIRECTORY ${PROJECT_BINARY_DIR}
-    RUNTIME_OUTPUT_DIRECTORY_RELEASE ${PROJECT_BINARY_DIR})
+# FFGL plugins: Text+ (source) and Text+ FX (effect) from the same code
+function(textplus_plugin target bundleId)
+    add_library(${target} MODULE src/plugin/TextSource.cpp)
+    target_link_libraries(${target} PRIVATE tp_core sdfkit ffglkit)
+    target_compile_definitions(${target} PRIVATE TEXTPLUS_VERSION="${TEXTPLUS_VERSION}")
+    if(APPLE)
+        set_target_properties(${target} PROPERTIES
+            BUNDLE TRUE
+            BUNDLE_EXTENSION bundle
+            MACOSX_BUNDLE_INFO_PLIST ${CMAKE_CURRENT_SOURCE_DIR}/cmake/Info.plist.in
+            MACOSX_BUNDLE_BUNDLE_NAME "${target}"
+            MACOSX_BUNDLE_GUI_IDENTIFIER "${bundleId}"
+            MACOSX_BUNDLE_BUNDLE_VERSION "${TEXTPLUS_VERSION}"
+            MACOSX_BUNDLE_SHORT_VERSION_STRING "${TEXTPLUS_VERSION}"
+        )
+        target_link_libraries(${target} PRIVATE "-Wl,-exported_symbol,_plugMain")
+    elseif(WIN32)
+        set_target_properties(${target} PROPERTIES PREFIX "" SUFFIX ".dll")
+        target_sources(${target} PRIVATE cmake/exports.def)
+    else()
+        target_link_libraries(${target} PRIVATE "-Wl,--version-script=${CMAKE_CURRENT_SOURCE_DIR}/cmake/exports.map")
+        set_target_properties(${target} PROPERTIES PREFIX "")
+    endif()
+    # Put the plugin where the scripts expect it (build/TextPlus.so|.bundle|.dll)
+    set_target_properties(${target} PROPERTIES
+        LIBRARY_OUTPUT_DIRECTORY ${PROJECT_BINARY_DIR}
+        LIBRARY_OUTPUT_DIRECTORY_RELEASE ${PROJECT_BINARY_DIR}
+        RUNTIME_OUTPUT_DIRECTORY ${PROJECT_BINARY_DIR}
+        RUNTIME_OUTPUT_DIRECTORY_RELEASE ${PROJECT_BINARY_DIR})
+endfunction()
+textplus_plugin(TextPlus "de.textplus.ffgl")
+textplus_plugin(TextPlusFX "de.textplus.ffgl.fx")
+target_compile_definitions(TextPlusFX PRIVATE TEXTPLUS_FX)
 
 if(PLUS_BUILD_TESTS)
     add_executable(layout_test tests/layout_test.cpp)
