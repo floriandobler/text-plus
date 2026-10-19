@@ -204,12 +204,13 @@ void main()
 {
 	float gd = glyphDistance();
 	// Projected or slanted glyphs: shape pixels are no longer output pixels.
-	// Dividing by the screen-space gradient converts the distance to output
-	// pixels (exact for the true distance, which has gradient 1 in shape space).
+	// The local quad coordinates are smooth, so their screen derivatives give
+	// the projection's area scale without the noise of the distance itself.
 	// Derivatives are taken before any branch.
-	float gg = length( vec2( dFdx( gd ), dFdy( gd ) ) );
+	vec2 jx = dFdx( vLocal ), jy = dFdy( vLocal );
+	float area = abs( jx.x * jy.y - jx.y * jy.x );// shape px^2 per screen px^2 (before glyph scale)
 	if( vProjected > 0.5 )
-		gd /= clamp( gg, 0.05, 20.0 );
+		gd /= clamp( sqrt( area ) * vScale, 0.02, 50.0 );
 	float dist  = uKind == 0 ? gd - vFx.y : boxDistancePx();
 	float alpha = vMisc.x;
 	if( vClip.x > -1.0e8 || vClip.y > -1.0e8 || vClip.z < 1.0e8 || vClip.w < 1.0e8 )
@@ -291,7 +292,11 @@ void main()
 }
 )GLSL";
 
-const char* kCompositeFS = R"GLSL(#version 410 core
+// The composite comes in two variants, chosen per frame: LITE covers what
+// 1.1 could do (one drop shadow, one inner shadow, outlines, glows) and is
+// small enough to compile quickly; FULL adds bevel, extrude, contours,
+// roughen, the input video and more shadow sets. FULL is compiled on first use.
+const char* kCompositeFS = R"GLSL(
 uniform sampler2D uA0;
 uniform sampler2D uA1;
 uniform sampler2D uA2;
@@ -379,7 +384,13 @@ uniform float uEdge;         // anti-aliasing width in px
 out vec4 oColor;
 
 const float kFar = 1.0e4;
+#if FULL
 const int kMaxEntries = 32;
+const int kMaxSets    = 5;
+#else
+const int kMaxEntries = 16;
+const int kMaxSets    = 2;
+#endif
 const float kPlateSet = 8.0;
 
 vec4 premul( vec4 c ) { return vec4( c.rgb * c.a, c.a ); }
@@ -410,6 +421,9 @@ float vnoise( vec2 p )
 // Edge displacement at a field texel, in px (moves with the block, loops with the evolution)
 float rough( ivec2 ip )
 {
+#if !FULL
+	return 0.0;
+#endif
 	if( uRough.y <= 0.0 )
 		return 0.0;
 	vec2 q = toBlock( vec2( ip ) + 0.5 ) / max( uRough.x, 1.0 ) + uRough.zw;
@@ -498,20 +512,30 @@ void main()
 	bool platesOn = uPlateLayers > 0;
 	loadText( ip, 0.0 );
 	bool anyShadow = false;
-	for( int s = 1; s <= uNumSets; ++s )
+	for( int s = 1; s <= kMaxSets; ++s )
 	{
+		if( s > uNumSets )
+			break;
 		loadText( ip - uSetOffset[ s ], float( s ) );
 		anyShadow = anyShadow || uSetKind[ s ] == 1;
 	}
 	if( platesOn )
 	{
 		loadPlates( ip, kPlateSet );
-		for( int s = 1; s <= uNumSets; ++s )
+		for( int s = 1; s <= kMaxSets; ++s )
+		{
+			if( s > uNumSets )
+				break;
 			if( uSetKind[ s ] == 1 )
 				loadPlates( ip - uSetOffset[ s ], kPlateSet + float( s ) );
+		}
 	}
 
+#if FULL
 	vec4 inputC = uInputMode != 0 ? inputColor( frag ) : vec4( 0.0 );
+#else
+	vec4 inputC = vec4( 0.0 );
+#endif
 	if( nE == 0 && uExtrudeOn == 0 )
 	{
 		oColor = uInputMode == 1 || uInputMode == 3 ? inputC : vec4( 0.0 );
@@ -566,15 +590,18 @@ void main()
 		float f  = abs( fract( x ) - 0.5 ) * uFillScale;// distance to the middle of a colour-1 band
 		baseFill = mix( uFill2, uFill, clamp( ( 0.25 * uFillScale - f ) / uEdge + 0.5, 0.0, 1.0 ) );
 	}
+#if FULL
 	else if( uFillMode == 6 && uInputMode != 0 )
 	{
 		vec4 c   = inputC;
 		baseFill = vec4( c.a > 0.0 ? c.rgb / c.a : vec3( 0.0 ), c.a * uFill.a );
 	}
+#endif
 
-	// Bevel and extrude look at the nearest text around the pixel.
-	float alpha0;
 	vec2 grad = vec2( 0.0 );
+	vec4 extrudeC = vec4( 0.0 );
+#if FULL
+	// Bevel and extrude look at the nearest text around the pixel.
 	if( uBevelOn == 1 || uExtrudeOn == 1 )
 	{
 		float a;
@@ -588,7 +615,6 @@ void main()
 	// silhouette (outer edge). Coverage is gathered front to back: each sample
 	// adds only what it covers beyond the samples before it, so a walk that
 	// grazes a corner blends with what lies behind it instead of leaving a seam.
-	vec4 extrudeC = vec4( 0.0 );
 	if( uExtrudeOn == 1 && uLayers > 0 )
 	{
 		float depth = uExtrudeParam.x;
@@ -631,6 +657,7 @@ void main()
 			extrudeC.rgb = C * mix( 1.0, lit, uExtrudeParam.y );
 		}
 	}
+#endif
 
 	// ---- The integral over the opacity threshold t ----
 	// Going from the most opaque shape down, the shapes with opacity >= t only
@@ -691,6 +718,7 @@ void main()
 
 		// ---- Fill effects ----
 		float depthIn = uFillEdge - d;// px inside the fill
+#if FULL
 		if( uBevelOn == 1 && d < kFar * 0.5 )
 		{
 			float size = max( uBevelParam.x, 0.5 );
@@ -725,11 +753,13 @@ void main()
 				fillP       = over( hi, fillP );
 			}
 		}
+#endif
 		for( int g = 0; g < uNumInnerGlows; ++g )
 		{
 			float kk = clamp( 1.0 - max( depthIn, 0.0 ) / max( uInnerGlowParam[ g ].x, 0.5 ), 0.0, 1.0 );
 			fillP    = over( premul( uInnerGlowColor[ g ] ) * clamp( uInnerGlowParam[ g ].y * kk * kk, 0.0, 1.0 ), fillP );
 		}
+#if FULL
 		if( uContoursOn == 1 && uContourParam.w > 0.5 && depthIn > 0.0 )
 		{
 			float sp  = max( uContourParam.x, 2.0 );
@@ -737,8 +767,9 @@ void main()
 			float cov = clamp( ( 0.5 * uContourParam.z * sp - f ) / uEdge + 0.5, 0.0, 1.0 ) * ( 1.0 - smoothstep( uContourParam.y - sp, uContourParam.y, depthIn ) );
 			fillP     = over( premul( uContourColor ) * cov, fillP );
 		}
-		for( int k = 1; k <= uNumSets; ++k )
-			if( uSetKind[ k ] == 2 )
+#endif
+		for( int k = 1; k <= kMaxSets; ++k )
+			if( k <= uNumSets && uSetKind[ k ] == 2 )
 			{
 				float w = max( uSetParam[ k ].x, aa );
 				vec4 is = premul( uSetColor[ k ] ) * smoothstep( -0.5 * w, 0.5 * w, dT[ k ] - uFillEdge );// the shape moved by the offset
@@ -761,6 +792,7 @@ void main()
 			glowC    = over( premul( uGlowColor[ g ] ) * clamp( uGlowParam[ g ].y * kk * kk, 0.0, 1.0 ), glowC );
 		}
 		vec4 contourC = vec4( 0.0 );
+#if FULL
 		if( uContoursOn == 1 && uContourParam.w != 1.0 )
 		{
 			float x   = d - uOuterEdge;
@@ -769,6 +801,7 @@ void main()
 			float cov = x >= 0.5 * sp ? clamp( ( 0.5 * uContourParam.z * sp - f ) / uEdge + 0.5, 0.0, 1.0 ) * ( 1.0 - smoothstep( uContourParam.y - sp, uContourParam.y, x ) ) : 0.0;
 			contourC  = premul( uContourColor ) * cov;
 		}
+#endif
 		vec4 shadowC = vec4( 0.0 );
 		float plateShape = 0.0;
 		vec4 plateC = vec4( 0.0 );
@@ -782,8 +815,8 @@ void main()
 				plateC = mix( plateC, premul( uPlateBorder ), plateShape );
 			plateC = mix( plateC, premul( pcol ), inside( dP[ 0 ], -uPlateBorderWidth, uEdge ) );
 		}
-		for( int k = 1; k <= uNumSets; ++k )
-			if( uSetKind[ k ] == 1 )
+		for( int k = 1; k <= kMaxSets; ++k )
+			if( k <= uNumSets && uSetKind[ k ] == 1 )
 			{
 				float w  = max( uSetParam[ k ].x, uEdge );
 				float ds = min( dT[ k ] - uOuterEdge, platesOn ? dP[ k ] : kFar ) - uSetParam[ k ].y;
@@ -804,6 +837,7 @@ void main()
 	float topT = nE > 0 ? E[ order[ 0 ] ].b : 0.0;
 	result     = over( result, extrudeC * ( 1.0 - topT ) );
 
+#if FULL
 	if( uInputMode == 1 )
 		result = over( result, inputC );
 	else if( uInputMode == 3 )
@@ -812,6 +846,7 @@ void main()
 		float cut = nE > 0 ? inside( dT[ 0 ], uOuterEdge, uEdge ) * maxT : 0.0;
 		result    = over( result * ( 1.0 - cut ), inputC * ( 1.0 - cut ) );
 	}
+#endif
 	if( result.a > 0.0 )
 		result.rgb /= result.a;// Resolume composites sources as straight alpha
 	oColor = result;
@@ -906,7 +941,8 @@ void varies( const std::vector< ShapeInstance >& items, bool& alphaVaries, bool&
 struct Renderer::SharedPrograms
 {
 	void* context = nullptr;
-	GLuint field = 0, composite = 0, copy = 0;
+	GLuint field = 0, composite = 0, compositeFull = 0, copy = 0;
+	bool fullTried = false;
 
 	// Layer k: A = distance, shape id, opacity, tint amount (RGBA16F); B = tint colour (RGBA8)
 	GLuint layerFbo[ kLayers ]{}, layerA[ kLayers ]{}, layerB[ kLayers ]{};
@@ -918,6 +954,7 @@ struct Renderer::SharedPrograms
 	{
 		glDeleteProgram( field );
 		glDeleteProgram( composite );
+		glDeleteProgram( compositeFull );
 		glDeleteProgram( copy );
 		releaseTargets();
 	}
@@ -1184,7 +1221,7 @@ bool Renderer::init()
 	programs = g_programs.acquire( []() -> SharedPrograms* {
 		auto* sp      = new SharedPrograms();
 		sp->field     = ffglkit::linkProgram( kShapeVS, kFieldFS, "sdfkit field" );
-		sp->composite = ffglkit::linkProgram( kCompositeVS, kCompositeFS, "sdfkit composite" );
+		sp->composite = ffglkit::linkProgram( kCompositeVS, ( std::string( "#version 410 core\n#define FULL 0\n" ) + kCompositeFS ).c_str(), "sdfkit composite" );
 		sp->copy      = ffglkit::linkProgram( kCompositeVS, kCopyFS, "sdfkit copy" );
 		if( !sp->field || !sp->composite || !sp->copy )
 		{
@@ -1521,7 +1558,13 @@ void Renderer::render( const FFGLViewportStruct& vp, GLuint hostFbo, const std::
 	glBindFramebuffer( GL_FRAMEBUFFER, hostFbo );
 	glViewport( (GLint)vp.x, (GLint)vp.y, w, h );
 	setScissor( shadedArea, (int)vp.x, (int)vp.y, w, h );
-	const GLuint prog = programs->composite;
+	const bool needFull = sets.size() > 2 || bevel || extrude || contours || roughen || withInput;
+	if( needFull && !programs->compositeFull && !programs->fullTried )
+	{
+		programs->fullTried     = true;
+		programs->compositeFull = ffglkit::linkProgram( kCompositeVS, ( std::string( "#version 410 core\n#define FULL 1\n" ) + kCompositeFS ).c_str(), "sdfkit composite (full)" );
+	}
+	const GLuint prog = needFull && programs->compositeFull ? programs->compositeFull : programs->composite;
 	glUseProgram( prog );
 	const char* aNames[ kLayers ] = { "uA0", "uA1", "uA2", "uA3" };
 	const char* bNames[ kLayers ] = { "uB0", "uB1", "uB2", "uB3" };

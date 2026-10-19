@@ -246,7 +246,30 @@ std::string trimCopy( const std::string& s )
 std::vector< std::string > splitSlides( const std::string& src, int mode, bool pipeIsNewline )
 {
 	std::vector< std::string > out;
-	if( mode == DISPLAY_SLIDES_LINES )
+	if( mode == DISPLAY_WORDS )
+	{
+		// One word per slide (lyric videos, kinetic type). Inline colour tags stay with their word.
+		std::string cur;
+		for( size_t i = 0; i < src.size(); ++i )
+		{
+			const char c = src[ i ];
+			const bool br = c == ' ' || c == '\t' || c == '\n' || c == '\r' || ( c == '|' && pipeIsNewline ) ||
+							( c == '\\' && i + 1 < src.size() && src[ i + 1 ] == 'n' );
+			if( br )
+			{
+				if( c == '\\' )
+					++i;
+				if( !cur.empty() )
+					out.push_back( cur );
+				cur.clear();
+			}
+			else
+				cur.push_back( c );
+		}
+		if( !cur.empty() )
+			out.push_back( cur );
+	}
+	else if( mode == DISPLAY_SLIDES_LINES )
 	{
 		std::string cur;
 		for( size_t i = 0; i < src.size(); ++i )
@@ -356,6 +379,129 @@ bool isSequence( AnimMode m )
 {
 	return m == AnimMode::SequenceIn || m == AnimMode::SequenceOut || m == AnimMode::SequenceInOut;
 }
+
+// ---------------------------------------------------------------------------
+// Text paths. A glyph at (s, n) of the flat layout (s = x of its centre on the
+// baseline, n = y of the baseline, px, y down) goes to a point on the path,
+// turned by the tangent (radians in the renderer's convention: x towards y).
+// ---------------------------------------------------------------------------
+struct PathPoint
+{
+	float x = 0, y = 0, angle = 0;
+	float rotX = 0, rotY = 0, depth = 0;// 3D (ring)
+	float alpha = 1;
+};
+
+class TextPath
+{
+public:
+	TextPath( int mode, float left, float right, float radius, float amount, float wavelength, float offset, float tiltDeg, float backOpacity, float size ) :
+		mode( mode ), cx( 0.5f * ( left + right ) ), offset( offset ), back( std::clamp( backOpacity / 100.0f, 0.0f, 1.0f ) )
+	{
+		const float L  = std::max( 1.0f, right - left );
+		constexpr float pi = 3.14159265f;
+		switch( mode )
+		{
+		case PATH_ARC: {
+			// Bend 100 % = the text spans half a circle; > 0 arches up, < 0 smiles
+			const float theta = std::clamp( amount, -100.0f, 100.0f ) / 100.0f * pi;
+			sign              = theta >= 0.0f ? 1.0f : -1.0f;
+			R                 = std::fabs( theta ) > 1e-4f ? L / std::fabs( theta ) : 0.0f;
+			// centre the arc's height on the anchor
+			sag = R * ( 1.0f - std::cos( 0.5f * std::fabs( theta ) ) );
+			break;
+		}
+		case PATH_CIRCLE:
+			R = radius > 0.0f ? radius : L / ( 2.0f * pi ) * 1.08f;
+			break;
+		case PATH_RING:
+			R = radius > 0.0f ? radius : L / ( 2.0f * pi ) * 1.15f;
+			break;
+		case PATH_WAVE:
+			A       = amount / 100.0f * size;
+			lambda  = std::max( 1.0f, wavelength );
+			break;
+		default:
+			break;
+		}
+		tilt = tiltDeg * pi / 180.0f;
+	}
+
+	PathPoint at( float s, float n ) const
+	{
+		PathPoint p;
+		constexpr float pi = 3.14159265f;
+		switch( mode )
+		{
+		case PATH_ARC: {
+			if( R <= 0.0f )
+			{
+				p.x = s;
+				p.y = n;
+				break;
+			}
+			// slide along the arc with Offset (a share of the half circle)
+			const float phi = ( s - cx ) / R + offset * pi;
+			if( sign > 0 )
+			{
+				p.x     = cx + ( R - n ) * std::sin( phi );
+				p.y     = R - ( R - n ) * std::cos( phi ) - 0.5f * sag;
+				p.angle = phi;
+			}
+			else
+			{
+				p.x     = cx + ( R + n ) * std::sin( phi );
+				p.y     = -R + ( R + n ) * std::cos( phi ) + 0.5f * sag;
+				p.angle = -phi;
+			}
+			break;
+		}
+		case PATH_CIRCLE: {
+			// centred on the anchor, the text's middle at the top, clockwise
+			const float phi = ( s - cx ) / R + offset * 2.0f * pi;
+			p.x             = ( R - n ) * std::sin( phi );
+			p.y             = -( R - n ) * std::cos( phi );
+			p.angle         = phi;
+			break;
+		}
+		case PATH_WAVE: {
+			const float k     = 2.0f * pi / lambda;
+			const float ph    = k * s + offset * 2.0f * pi;
+			const float slope = A * k * std::cos( ph );
+			p.angle           = std::atan( slope );
+			// the baseline follows the wave; lines above or below follow its normal
+			p.x = s - n * std::sin( p.angle );
+			p.y = A * std::sin( ph ) + n * std::cos( p.angle );
+			break;
+		}
+		case PATH_RING: {
+			// a cylinder around the vertical axis through the anchor, seen from the front
+			const float phi = ( s - cx ) / R + offset * 2.0f * pi;
+			const float cphi = std::cos( phi );
+			p.x              = R * std::sin( phi );
+			const float zc   = -R * cphi;// -R (front) .. R (back)
+			p.y              = n * std::cos( tilt ) - zc * std::sin( tilt );
+			p.depth          = n * std::sin( tilt ) + zc * std::cos( tilt ) + R;
+			p.rotY           = phi;
+			p.rotX           = tilt;
+			// the far side shows the letters mirrored: dim it
+			const float facing = std::clamp( cphi * 6.0f + 0.5f, 0.0f, 1.0f );
+			p.alpha            = back + ( 1.0f - back ) * facing;
+			break;
+		}
+		default:
+			p.x = s;
+			p.y = n;
+			break;
+		}
+		return p;
+	}
+
+private:
+	int mode;
+	float cx, offset, back;
+	float R = 0, sign = 1, A = 0, lambda = 1, tilt = 0, sag = 0;
+};
 }//namespace
 
 // ===========================================================================
@@ -2628,9 +2774,9 @@ FFResult TextSource::ProcessOpenGL( ProcessOpenGLStruct* pGL )
 		}
 
 		const int disp    = display();
-		const bool ticker = disp == DISPLAY_TICKER, roll = disp == DISPLAY_ROLL;
+		const bool ticker = disp == DISPLAY_TICKER, roll = disp == DISPLAY_ROLL, pattern = disp == DISPLAY_PATTERN;
 		LayoutParams lp   = currentLayoutParams( shownText );
-		if( ticker )
+		if( ticker || pattern )
 		{
 			// One line: the lines joined by the separator, plus one separator before the repeat
 			std::string joined;
@@ -2726,6 +2872,42 @@ FFResult TextSource::ProcessOpenGL( ProcessOpenGLStruct* pGL )
 				}
 			}
 		}
+		else if( pattern && !layout.lines.empty() )
+		{
+			// Rows of the ticker line filling the screen (or the box), each row
+			// shifted, neighbours moving in opposite directions when "Alternate" is on.
+			const float winW = boxOn ? std::max( 1.0f, values[ P_BOX_WIDTH ] ) : vpW;
+			const float winH = boxOn && values[ P_BOX_HEIGHT ] > 0.0f ? values[ P_BOX_HEIGHT ] : vpH;
+			window.on        = true;
+			window.x0        = -winW * 0.5f;
+			window.x1        = winW * 0.5f;
+			window.y0        = -winH * 0.5f;
+			window.y1        = winH * 0.5f;
+			window.fade      = 0.0f;
+			const LineBox& lb = layout.lines.front();
+			const float cycle = lb.penEnd - lb.left;
+			const float step  = std::max( 1.0f, size * lp.leadingPercent / 100.0f * values[ P_PATTERN_SPACING ] / 100.0f );
+			int rows          = (int)std::lround( values[ P_PATTERN_ROWS ] );
+			if( rows <= 0 )
+				rows = std::min( 200, (int)std::ceil( winH / step ) + 2 );
+			const float reach = style.reach() + size;
+			if( cycle > 1.0f )
+				for( int r = 0; r < rows; ++r )
+				{
+					const float dy      = ( (float)r - 0.5f * (float)( rows - 1 ) ) * step;
+					const float dir     = values[ P_PATTERN_ALTERNATE ] > 0.5f && ( r & 1 ) ? -1.0f : 1.0f;
+					const double travel = scrollTime * values[ P_SCROLL_SPEED ] * dir + ( (double)values[ P_SCROLL_POSITION ] + r * values[ P_PATTERN_SHIFT ] / 100.0 ) * cycle;
+					const float o       = (float)positiveFmod( travel, cycle );
+					const float start   = window.x0 - o - lb.left;
+					for( int k = 0; k < 400; ++k )
+					{
+						const float shift = start + k * cycle;
+						if( shift + lb.left > window.x1 + reach )
+							break;
+						copies.emplace_back( shift, dy );
+					}
+				}
+		}
 		else
 			copies.emplace_back( 0.0f, 0.0f );
 
@@ -2783,7 +2965,8 @@ FFResult TextSource::ProcessOpenGL( ProcessOpenGLStruct* pGL )
 		};
 		std::vector< PlateRect > plateRects;
 		const int plateMode = (int)values[ P_PLATE ];
-		if( plateMode != PLATE_OFF && !layout.lines.empty() )
+		const int pathMode  = ticker || roll ? PATH_FLAT : (int)values[ P_PATH ];
+		if( plateMode != PLATE_OFF && !layout.lines.empty() && pathMode == PATH_FLAT )
 		{
 			const float padX  = values[ P_PLATE_PAD_X ] / 100.0f * size;
 			const float padY  = values[ P_PLATE_PAD_Y ] / 100.0f * size;
@@ -2808,6 +2991,16 @@ FFResult TextSource::ProcessOpenGL( ProcessOpenGLStruct* pGL )
 				{
 					// One band across the ticker window
 					plateRects.push_back( PlateRect{ window.x0, firstLine->top - padY, window.x1, firstLine->bottom + padY } );
+				}
+				else if( pattern )
+				{
+					// One band per row
+					std::vector< float > rowsY;
+					for( const auto& c : copies )
+						if( std::find( rowsY.begin(), rowsY.end(), c.second ) == rowsY.end() )
+							rowsY.push_back( c.second );
+					for( float dy : rowsY )
+						plateRects.push_back( PlateRect{ window.x0, firstLine->top - padY + dy, window.x1, firstLine->bottom + padY + dy } );
 				}
 				else
 					for( const auto& c : copies )
@@ -2923,6 +3116,8 @@ FFResult TextSource::ProcessOpenGL( ProcessOpenGLStruct* pGL )
 			return (uint32_t)gid;
 		};
 
+		const TextPath path( pathMode, layout.left, layout.right, values[ P_PATH_RADIUS ], values[ P_PATH_AMOUNT ], values[ P_PATH_LENGTH ],
+							 values[ P_PATH_OFFSET ], values[ P_PATH_TILT ], values[ P_BACK_OPACITY ], size );
 		instances.reserve( placed.size() );
 		for( size_t i = 0; i < placed.size(); ++i )
 		{
@@ -2990,6 +3185,25 @@ FFResult TextSource::ProcessOpenGL( ProcessOpenGLStruct* pGL )
 			inst.scale         = glyphScale;
 			inst.rotation      = st.rotation;
 			inst.alpha         = st.alpha;
+			float pathRotX = 0.0f, pathRotY = 0.0f, pathDepth = 0.0f;
+			if( pathMode != PATH_FLAT )
+			{
+				// The glyph's centre on the baseline moves onto the path, the glyph
+				// turns with the path's tangent; animator offsets follow the path.
+				const PathPoint pp = path.at( g.x + 0.5f * g.advance, g.y );
+				const float cs = std::cos( pp.angle ), sn = std::sin( pp.angle );
+				const float half = 0.5f * g.advance;
+				const float ox   = st.dx + shiftX * st.scale * c, oy = st.dy + shiftX * st.scale * s;
+				inst.x           = pp.x - cs * half + cs * ox - sn * oy;
+				inst.y           = pp.y - sn * half + sn * ox + cs * oy;
+				inst.rotation    = st.rotation + pp.angle;
+				pathRotX         = pp.rotX;
+				pathRotY         = pp.rotY;
+				pathDepth        = pp.depth;
+				inst.alpha *= pp.alpha;
+				if( inst.alpha <= 0.001f )
+					continue;
+			}
 			inst.index         = g.charIndex / lastIdx;
 			inst.pxPerAtlasPx  = size * glyphScale / L.emPx;
 			inst.spreadAtlasPx = (float)L.spreadPx;
@@ -3004,12 +3218,21 @@ FFResult TextSource::ProcessOpenGL( ProcessOpenGLStruct* pGL )
 			inst.clipY0        = st.clipY0;
 			inst.clipX1        = st.clipX1;
 			inst.clipY1        = st.clipY1;
-			inst.rotX          = st.rotationX;
-			inst.rotY          = st.rotationY;
-			inst.depth         = st.depth;
+			inst.rotX          = st.rotationX + pathRotX;
+			inst.rotY          = st.rotationY + pathRotY;
+			inst.depth         = st.depth + pathDepth;
 			inst.skew          = st.skew;
 			inst.blur          = st.blur;
 			inst.weight        = st.weight;
+			if( inst.rotX != 0.0f || inst.rotY != 0.0f )
+			{
+				// A glyph seen edge-on is a sliver the distance field cannot resolve: fade it out
+				const float facing = std::fabs( std::cos( inst.rotX ) * std::cos( inst.rotY ) );
+				const float t      = std::clamp( ( facing - 0.04f ) / 0.16f, 0.0f, 1.0f );
+				inst.alpha *= t * t * ( 3.0f - 2.0f * t );
+				if( inst.alpha <= 0.001f )
+					continue;
+			}
 			instances.push_back( inst );
 		}
 

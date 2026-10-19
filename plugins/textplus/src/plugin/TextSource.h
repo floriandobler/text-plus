@@ -380,7 +380,7 @@ private:
 	void updateVisibility();
 	int source() const { return (int)values[ P_SOURCE ]; }
 	int display() const { return (int)values[ P_DISPLAY ]; }
-	bool slidesOn() const { return display() == DISPLAY_SLIDES_LINES || display() == DISPLAY_SLIDES_BLOCKS; }
+	bool slidesOn() const { return display() == DISPLAY_SLIDES_LINES || display() == DISPLAY_SLIDES_BLOCKS || display() == DISPLAY_WORDS; }
 
 	// Fonts
 	void populateFontMenus( bool raiseEvent );
