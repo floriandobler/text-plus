@@ -33,7 +33,8 @@ ParamPlugin::ParamPlugin( unsigned n ) :
 	hostKnown( n, std::nanf( "" ) ),
 	visibility( n, -1 ),
 	textBuffers( n ),
-	displayBuffers( n )
+	displayBuffers( n ),
+	displayNames( n )
 {
 }
 
@@ -149,6 +150,14 @@ void ParamPlugin::show( unsigned id, bool v )
 		return;
 	visibility[ id ] = want;
 	SetParamVisibility( id, v, raiseVisibilityEvents );
+}
+
+void ParamPlugin::label( unsigned id, const std::string& displayName )
+{
+	if( id >= displayNames.size() || displayNames[ id ] == displayName )
+		return;
+	displayNames[ id ] = displayName;
+	SetParamDisplayName( id, displayName, raiseVisibilityEvents );
 }
 
 char* ParamPlugin::returnText( unsigned id, const std::string& s )

@@ -248,6 +248,7 @@ int main( int argc, char** argv )
 			extraInstances = std::atoi( argv[ a ] + 11 ) - 1;
 	double timeSec  = 0.0;
 	std::vector< std::string > printParams;// "@print=A1 Mode,A1 Preset"
+	std::string uiPath;// "@ui=file.txt": writes the panel as Resolume shows it (visible rows, display names)
 	double dt       = 0.0;// seconds per frame; > 0 plays time forward and renders exactly @frames frames
 	std::string bg  = "checker";
 	bool straight   = true;// Text+ outputs straight alpha by default (Resolume's convention)
@@ -394,6 +395,11 @@ int main( int argc, char** argv )
 		if( key == "@frames" )
 		{
 			frames = std::atoi( val.c_str() );
+			continue;
+		}
+		if( key == "@ui" )
+		{
+			uiPath = val;
 			continue;
 		}
 		if( key == "@print" )
@@ -700,6 +706,73 @@ int main( int argc, char** argv )
 			std::snprintf( disp, sizeof( disp ), "%s", d ? d : "" );
 			std::printf( "  %-14s = %g  (%s)\n", name.c_str(), *(float*)&v.UIntValue, disp );
 		}
+	}
+
+	if( !uiPath.empty() )
+	{
+		// The panel as Resolume draws it: groups as collapsible headers, only
+		// visible rows, display names where the plugin sets one, the four
+		// parameters of a colour (hue, saturation, brightness, alpha) as one row.
+		FILE* f = std::fopen( uiPath.c_str(), "w" );
+		std::string lastGroup = "\x01";
+		int rows = 0, groups = 0;
+		for( unsigned i = 0; i < numParams; ++i )
+		{
+			if( !call( FF_GET_PRAMETER_VISIBILITY, u( i ), inst ).UIntValue )
+				continue;
+			if( types[ i ] == FF_TYPE_SATURATION || types[ i ] == FF_TYPE_BRIGHTNESS || types[ i ] == FF_TYPE_ALPHA )
+				continue;
+			char group[ 256 ] = "";
+			GetStringStruct gs{ i, { group, (FFUInt32)sizeof( group ) - 1 } };
+			call( FF_GET_PARAM_GROUP, ptr( &gs ) );
+			if( lastGroup != group )
+			{
+				std::fprintf( f, "%s[%s]\n", groups ? "\n" : "", group );
+				lastGroup = group;
+				++groups;
+			}
+			char dn[ 256 ] = "";
+			GetStringStruct ds{ i, { dn, (FFUInt32)sizeof( dn ) - 1 } };
+			call( FF_GET_PARAM_DISPLAY_NAME, ptr( &ds ), inst );
+			const char* name = dn[ 0 ] ? dn : (const char*)call( FF_GET_PARAMETER_NAME, u( i ) ).PointerValue;
+			const char* kind = types[ i ] == FF_TYPE_OPTION ? "menu" : types[ i ] == FF_TYPE_EVENT ? "button" : types[ i ] == FF_TYPE_BOOLEAN ? "toggle"
+							   : types[ i ] == FF_TYPE_HUE ? "colour" : types[ i ] == FF_TYPE_TEXT ? "text" : types[ i ] == FF_TYPE_FILE ? "file" : "slider";
+			std::string value;
+			if( types[ i ] == FF_TYPE_TEXT || types[ i ] == FF_TYPE_FILE )
+			{
+				FFMixed v = call( FF_GET_PARAMETER, u( i ), inst );
+				value     = std::string( "\"" ) + ( v.PointerValue ? (const char*)v.PointerValue : "" ) + "\"";
+			}
+			else if( types[ i ] != FF_TYPE_HUE && types[ i ] != FF_TYPE_EVENT )
+			{
+				const char* d = (const char*)call( FF_GET_PARAMETER_DISPLAY, u( i ), inst ).PointerValue;
+				value         = d ? d : "";
+				if( types[ i ] == FF_TYPE_OPTION )
+				{
+					FFMixed v = call( FF_GET_PARAMETER, u( i ), inst );
+					float fv  = *(float*)&v.UIntValue;
+					// element whose value matches
+					const unsigned n = call( FF_GET_NUM_PARAMETER_ELEMENTS, u( i ), inst ).UIntValue;
+					for( unsigned e = 0; e < n; ++e )
+					{
+						GetParameterElementValueStruct ev{ i, e };
+						FFMixed evv = call( FF_GET_PARAMETER_ELEMENT_VALUE, ptr( &ev ), inst );
+						if( std::fabs( *(float*)&evv.UIntValue - fv ) < 1e-4f )
+						{
+							GetParameterElementNameStruct en{ i, e };
+							const char* en2 = (const char*)call( FF_GET_PARAMETER_ELEMENT_NAME, ptr( &en ), inst ).PointerValue;
+							value           = en2 ? en2 : "";
+							break;
+						}
+					}
+				}
+			}
+			std::fprintf( f, "  %-26s %-7s %s\n", name, kind, value.c_str() );
+			++rows;
+		}
+		std::fprintf( f, "\n%d rows in %d groups\n", rows, groups );
+		std::fclose( f );
+		std::printf( "  panel: %d rows in %d groups -> %s\n", rows, groups, uiPath.c_str() );
 	}
 
 	for( FFInstanceID o : others )

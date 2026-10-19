@@ -68,6 +68,11 @@ protected:
 
 	// Visibility: collect with show(), sent to the host only when it changed.
 	void show( unsigned id, bool visible );
+	bool shown( unsigned id ) const { return id < visibility.size() && visibility[ id ] == 1; }
+	// Display name: what the host shows instead of the stored name (FFGL 2.3,
+	// Resolume 7.4+). The stored name stays the identity for compositions and
+	// OSC. Sent to the host only when it changed; "" falls back to the name.
+	void label( unsigned id, const std::string& displayName );
 	bool raiseVisibilityEvents = false;// false while defining (part of the initial info)
 
 	// String return buffers
@@ -79,6 +84,7 @@ protected:
 
 private:
 	std::vector< signed char > visibility;// last visibility sent to the host
+	std::vector< std::string > displayNames;// last display name sent to the host
 	std::vector< std::string > textBuffers, displayBuffers;
 };
 

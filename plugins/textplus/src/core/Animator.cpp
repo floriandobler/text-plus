@@ -9,6 +9,7 @@ namespace textplus
 namespace
 {
 constexpr double kTwoPi = 6.283185307179586;
+}//namespace
 
 float applyEase( AnimEase e, float t )
 {
@@ -28,9 +29,38 @@ float applyEase( AnimEase e, float t )
 		float u        = t - 1.0f;
 		return 1.0f + c3 * u * u * u + c1 * u * u;// "back out": passes 1, then settles
 	}
+	case AnimEase::Bounce: {
+		// "bounce out": hits the rest position, bounces three times lower each time
+		const float n1 = 7.5625f, d1 = 2.75f;
+		if( t < 1.0f / d1 )
+			return n1 * t * t;
+		if( t < 2.0f / d1 )
+		{
+			t -= 1.5f / d1;
+			return n1 * t * t + 0.75f;
+		}
+		if( t < 2.5f / d1 )
+		{
+			t -= 2.25f / d1;
+			return n1 * t * t + 0.9375f;
+		}
+		t -= 2.625f / d1;
+		return n1 * t * t + 0.984375f;
+	}
+	case AnimEase::Elastic: {
+		if( t <= 0.0f || t >= 1.0f )
+			return t;
+		const float c4 = (float)( kTwoPi / 3.0 );
+		return std::pow( 2.0f, -10.0f * t ) * std::sin( ( t * 10.0f - 0.75f ) * c4 ) + 1.0f;
+	}
+	case AnimEase::EaseIn:
+		return t * t * t;
 	}
 	return t;
 }
+
+namespace
+{
 
 uint32_t hash32( uint32_t x )
 {
@@ -238,6 +268,20 @@ void applyAnimator( const std::vector< AnimItem >& items, const UnitCounts& coun
 	const float maxRank           = *std::max_element( rk.begin(), rk.end() );
 	const float progress          = std::clamp( p.progress, 0.0f, 1.0f );
 	const float rotRad            = p.rotationDeg * 3.14159265f / 180.0f;
+	const float deg               = 3.14159265f / 180.0f;
+	// Tracking spreads the units of a line around the line's centre: per line,
+	// the first and last unit index.
+	std::vector< std::pair< int, int > > lineUnits;
+	if( p.trackingPx != 0.0f )
+		for( const AnimItem& it : items )
+		{
+			const int li = std::max( 0, it.lineIndex );
+			if( li >= (int)lineUnits.size() )
+				lineUnits.resize( (size_t)li + 1, { 1 << 30, -1 } );
+			const int ui           = std::clamp( unitOf( it, p.unit == AnimUnit::Line ? AnimUnit::Character : p.unit ), 0, 1 << 29 );
+			lineUnits[ li ].first  = std::min( lineUnits[ li ].first, ui );
+			lineUnits[ li ].second = std::max( lineUnits[ li ].second, ui );
+		}
 	// Scramble: the random characters change with Progress and on every 16th note
 	const long scrambleStep = (long)std::floor( progress * 50.0f ) + (long)std::floor( p.beats * 4.0 );
 
@@ -298,6 +342,18 @@ void applyAnimator( const std::vector< AnimItem >& items, const UnitCounts& coun
 		s.dx += p.offsetX * signedA;
 		s.dy += p.offsetY * signedA;
 		s.rotation += rotRad * signedA;
+		s.rotationX += p.rotationXDeg * deg * signedA;
+		s.rotationY += p.rotationYDeg * deg * signedA;
+		s.depth += p.depth * signedA;
+		s.skew += std::tan( std::clamp( p.skewDeg * signedA, -80.0f, 80.0f ) * deg );
+		s.weight += p.weightPx * signedA;
+		s.blur += std::max( 0.0f, p.blurPx * unsignedA );
+		if( p.trackingPx != 0.0f && !lineUnits.empty() )
+		{
+			const auto& lu = lineUnits[ (size_t)std::clamp( items[ i ].lineIndex, 0, (int)lineUnits.size() - 1 ) ];
+			const int ui   = unitOf( items[ i ], p.unit == AnimUnit::Line ? AnimUnit::Character : p.unit );
+			s.dx += p.trackingPx * signedA * ( (float)ui - 0.5f * (float)( lu.first + lu.second ) );
+		}
 		s.scale *= std::max( 0.0f, 1.0f + ( p.scale - 1.0f ) * unsignedA );
 		s.alpha *= std::clamp( 1.0f + ( p.opacity - 1.0f ) * unsignedA, 0.0f, 1.0f );
 		if( p.colorAmount > 0.0f )
@@ -358,9 +414,15 @@ float maxAnimatedScale( const AnimatorParams& p )
 	if( p.mode == AnimMode::Off )
 		return 1.0f;
 	float s = std::max( 1.0f, p.scale );
-	if( p.ease == AnimEase::Overshoot && ( p.mode == AnimMode::SequenceIn || p.mode == AnimMode::SequenceOut || p.mode == AnimMode::SequenceInOut ) )
-		s = std::max( s, 1.0f + std::fabs( p.scale - 1.0f ) * 0.1f );// back-out passes the target by ~10 %
+	const bool overshoots = p.ease == AnimEase::Overshoot || p.ease == AnimEase::Elastic;
+	if( overshoots && ( p.mode == AnimMode::SequenceIn || p.mode == AnimMode::SequenceOut || p.mode == AnimMode::SequenceInOut ) )
+		s = std::max( s, 1.0f + std::fabs( p.scale - 1.0f ) * 0.4f );// back-out passes the target by ~10 %, elastic by ~37 %
 	return s;
+}
+
+bool usesProjection( const AnimatorParams& p )
+{
+	return p.mode != AnimMode::Off && ( p.rotationXDeg != 0.0f || p.rotationYDeg != 0.0f || p.depth != 0.0f || p.skewDeg != 0.0f );
 }
 
 }//namespace textplus

@@ -87,7 +87,10 @@ enum class AnimEase
 	Linear,
 	Smooth,
 	EaseOut,
-	Overshoot
+	Overshoot,
+	Bounce, // falls in and bounces on the rest position
+	Elastic,// springs past the rest position and settles
+	EaseIn  // accelerates (for "out" movements)
 };
 
 struct AnimatorParams
@@ -103,6 +106,13 @@ struct AnimatorParams
 	float scale       = 1.0f;      // 1 = 100 %
 	float rotationDeg = 0.0f;      // counter-clockwise
 	float opacity     = 1.0f;      // 0..1
+	float depth       = 0.0f;      // px towards the back (3D, with perspective)
+	float rotationXDeg = 0.0f;     // 3D: tilt around the horizontal axis (top away from the viewer)
+	float rotationYDeg = 0.0f;     // 3D: turn around the vertical axis
+	float skewDeg     = 0.0f;      // slant, positive leans right
+	float trackingPx  = 0.0f;      // spacing added between units of a line, px per unit
+	float blurPx      = 0.0f;      // edge softness
+	float weightPx    = 0.0f;      // thicker (> 0) or thinner (< 0), px
 	float colorAmount = 0.0f;      // 0..1
 	Rgb color;
 	float wipe     = 0.0f;         // 0..1: share of the unit hidden when away
@@ -137,6 +147,11 @@ struct GlyphState
 	float scale    = 1.0f;
 	float rotation = 0.0f;// radians, counter-clockwise on screen
 	float alpha    = 1.0f;
+	float rotationX = 0.0f, rotationY = 0.0f;// radians (3D)
+	float depth    = 0.0f;// px towards the back
+	float skew     = 0.0f;// tan of the slant angle
+	float blur     = 0.0f;// px
+	float weight   = 0.0f;// px
 	Rgb tint;             // fill tint colour
 	float tintAmount = 0;// 0 = plain fill
 	// Visible rectangle in layout space (wipes); infinite = no clip
@@ -164,5 +179,10 @@ void layerTint( GlyphState& s, const Rgb& c, float k );
 
 // Largest scale a glyph can reach with these parameters (for distance-field reach).
 float maxAnimatedScale( const AnimatorParams& params );
+// Easing curve (exposed for tests).
+float applyEase( AnimEase e, float t );
+// True if the animator moves glyphs in 3D or slants them (the renderer then
+// measures distances in screen space).
+bool usesProjection( const AnimatorParams& params );
 
 }//namespace textplus
