@@ -11,6 +11,7 @@
 #include "core/Clock.h"
 #include "core/FontDatabase.h"
 #include "core/FontFace.h"
+#include "core/LiveData.h"
 #include "core/TextLayout.h"
 
 #include <memory>
@@ -446,9 +447,18 @@ private:
 	double currentBeats() const;
 
 	std::string text, fontText, fontFile, textFile, url;
-	// Live data (filled in by the data module)
+	// Live data
 	std::string webStatus, oscStatus;
 	int64_t webStamp = -1;
+	int webFormat    = 0;
+	std::string webBody;
+	Json webJson;
+	int oscPort      = 0;
+	double lastBpm   = 0.0;
+	double remainingSeconds = 1e30;// countdowns: seconds left (for the warning colour)
+	std::string typedText() const;
+	PlaceholderContext placeholderContext() const;
+	void updateOsc();
 	std::string timerTarget = "20:00", timerDuration = "5:00", separator = "   \xE2\x80\xA2   ";
 	static constexpr int kExtraLines = P_LINE_LAST - P_LINE_FIRST + 1;
 	std::string extraLines[ kExtraLines ];

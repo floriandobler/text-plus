@@ -3,7 +3,10 @@
 #include "core/Csv.h"
 #include "core/FileUtil.h"
 #include "core/GlyphCache.h"
+#include "core/LiveData.h"
+#include "core/Osc.h"
 #include "core/Utf8.h"
+#include "core/WebFetch.h"
 
 #include <algorithm>
 #include <chrono>
@@ -523,7 +526,11 @@ TextSource::TextSource() :
 		populateFontMenus( false );
 }
 
-TextSource::~TextSource() = default;
+TextSource::~TextSource()
+{
+	if( oscPort > 0 )
+		OscReceiver::instance().release( oscPort );
+}
 
 void TextSource::defineParameters()
 {
@@ -1558,6 +1565,7 @@ void TextSource::SetBeatInfo( float bpm, float barPhase )
 	CFFGLPlugin::SetBeatInfo( bpm, barPhase );
 	if( bpm <= 0.0f )
 		return;
+	lastBpm = bpm;
 	if( lastBarPhase >= 0.0f && barPhase + 0.5f < lastBarPhase )
 		barCount += 1.0;// bar wrapped
 	lastBarPhase = barPhase;
@@ -1845,12 +1853,52 @@ void TextSource::stepSlide( int delta )
 	setValue( P_SLIDE, slidePosition( next, slideCount ) );
 }
 
+std::string TextSource::typedText() const
+{
+	std::string typed = text;
+	int usedLines     = shownLines;// a freshly added, still empty field adds no blank line
+	while( usedLines > 0 && extraLines[ usedLines - 1 ].empty() )
+		--usedLines;
+	for( int i = 0; i < usedLines; ++i )
+		typed += "\n" + extraLines[ i ];
+	return typed;
+}
+
 std::string TextSource::sourceText()
 {
 	if( source() == SOURCE_FILE )
 	{
 		pollTextFile();
 		return !textFile.empty() && textFileStamp >= 0 ? textFileContent : std::string();
+	}
+	if( source() == SOURCE_WEB )
+	{
+		// Fetched in the background; this returns at once with the latest content.
+		const WebFetcher::Result r = WebFetcher::instance().poll( url, values[ P_URL_REFRESH ] );
+		webStatus                  = url.empty() ? std::string( "enter a URL" ) : r.status;
+		if( r.stamp != webStamp )
+		{
+			webStamp  = r.stamp;
+			webFormat = (int)detectWebFormat( url, r.contentType, r.body );
+			webBody   = toUtf8( r.body );
+			std::string err;
+			webJson   = webFormat == (int)WebFormat::Json ? Json::parse( webBody, &err ) : Json();
+			if( !err.empty() )
+				webStatus = "JSON: " + err;
+		}
+		if( webStamp < 0 )
+			return {};
+		if( webFormat == (int)WebFormat::Json )
+		{
+			// The text fields are the template ("{main.temp} °C"); without placeholders
+			// the document's fields are listed, so it is easy to see what to use.
+			PlaceholderContext ctx = placeholderContext();
+			ctx.json               = &webJson;
+			bool found             = false;
+			const std::string out  = expandPlaceholders( typedText(), ctx, &found );
+			return found ? out : webJson.outline();
+		}
+		return webBody;
 	}
 	std::string typed = text;
 	int usedLines     = shownLines;// a freshly added, still empty field adds no blank line
@@ -1864,7 +1912,8 @@ std::string TextSource::sourceText()
 std::string TextSource::currentText()
 {
 	std::string src = sourceText();
-	const bool csv  = source() == SOURCE_FILE && !textFile.empty() && textFileStamp >= 0 && isCsvPath( textFile );
+	const bool csv  = ( source() == SOURCE_FILE && !textFile.empty() && textFileStamp >= 0 && isCsvPath( textFile ) ) ||
+					 ( source() == SOURCE_WEB && webStamp >= 0 && webFormat == (int)WebFormat::Csv );
 	if( csv != csvActive )
 	{
 		csvActive = csv;
@@ -1915,7 +1964,42 @@ std::string TextSource::currentText()
 		const std::string value = timerValueText( hide );
 		shown                   = hide ? std::string() : expandTimeTemplate( shown, value, localNow() );
 	}
+	// {bpm}, {slide}, {/osc/address} ... in every source
+	if( source() != SOURCE_WEB || webFormat != (int)WebFormat::Json )
+		shown = expandPlaceholders( shown, placeholderContext() );
 	return applyCase( shown, (TextCase)std::clamp( (int)values[ P_CASE ], 0, 2 ) );
+}
+
+PlaceholderContext TextSource::placeholderContext() const
+{
+	PlaceholderContext ctx;
+	ctx.bpm    = lastBpm;
+	ctx.beats  = currentBeats();
+	ctx.slide  = slideIndex + 1;
+	ctx.slides = slideCount;
+	return ctx;
+}
+
+void TextSource::updateOsc()
+{
+	const int want = values[ P_OSC_PORT ] >= 1.0f ? (int)std::lround( values[ P_OSC_PORT ] ) : 0;
+	if( want != oscPort )
+	{
+		if( oscPort > 0 )
+			OscReceiver::instance().release( oscPort );
+		oscPort = want;
+		if( oscPort > 0 )
+			OscReceiver::instance().acquire( oscPort );
+	}
+	if( oscPort > 0 )
+	{
+		std::string st = OscReceiver::instance().status( oscPort );
+		if( st == "listening" )
+			st += ", " + std::to_string( OscReceiver::instance().messages( oscPort ) ) + " messages";
+		oscStatus = st;
+	}
+	else
+		oscStatus.clear();
 }
 
 // ===========================================================================
@@ -1951,9 +2035,11 @@ void TextSource::timerReset()
 std::string TextSource::timerValueText( bool& hide )
 {
 	hide                    = false;
+	remainingSeconds        = 1e30;
 	const auto format       = (TimeFormat)std::clamp( (int)values[ P_TIMER_FORMAT ], 0, 5 );
 	const int atZero        = (int)values[ P_TIMER_AT_ZERO ];
 	auto remaining          = [ & ]( double rem ) -> std::string {
+		remainingSeconds = rem;
 		if( rem <= 0.0 )
 		{
 			if( atZero == 1 )
@@ -2726,6 +2812,7 @@ FFResult TextSource::ProcessOpenGL( ProcessOpenGLStruct* pGL )
 			setValue( P_SHOW_OPTIONS, 1.0f );
 		updateVisibility();
 	}
+	updateOsc();
 	FontDatabase& db = FontDatabase::instance();
 	db.ensureScanning();
 	if( !menusPopulated && db.isReady() )
@@ -2946,6 +3033,18 @@ FFResult TextSource::ProcessOpenGL( ProcessOpenGLStruct* pGL )
 				layerTint( glyphStates[ i ], lineColor[ g.style ], lineColorAmount[ g.style ] );
 			if( g.colorIndex >= 0 && g.colorIndex < (int)layout.palette.size() )
 				layerTint( glyphStates[ i ], layout.palette[ g.colorIndex ], 1.0f );
+		}
+		// Countdown warning: the text takes the warning colour (blinking if asked)
+		if( source() == SOURCE_CLOCK && values[ P_WARN_AT ] >= 0.5f && remainingSeconds <= values[ P_WARN_AT ] )
+		{
+			const int tm = (int)values[ P_TIMER_MODE ];
+			const bool blinkOff = values[ P_WARN_BLINK ] > 0.5f && std::fmod( wallSeconds(), 1.0 ) >= 0.5;
+			if( ( tm == TIMER_COUNTDOWN || tm == TIMER_COUNTDOWN_TO ) && !blinkOff )
+			{
+				const ffglkit::Rgba wc = colorOf( P_WARN_H );
+				for( GlyphState& st : glyphStates )
+					layerTint( st, Rgb{ wc.r, wc.g, wc.b }, wc.a );
+			}
 		}
 		const float lastIdx = (float)std::max( 1, layout.numChars - 1 );
 		if( style.fillMode == sdfkit::FillMode::GradientChars )

@@ -15,15 +15,24 @@ add_library(tp_core STATIC
     src/core/Csv.cpp
     src/core/Clock.cpp
     src/core/FileUtil.cpp
+    src/core/LiveData.cpp
+    src/core/Osc.cpp
+    src/core/WebFetch.cpp
     ${CMAKE_CURRENT_BINARY_DIR}/EmbeddedFonts.cpp
 )
 if(APPLE)
-    target_sources(tp_core PRIVATE src/core/FontPaths_mac.mm)
-    set_source_files_properties(src/core/FontPaths_mac.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
+    target_sources(tp_core PRIVATE src/core/FontPaths_mac.mm src/core/WebFetch_mac.mm)
+    set_source_files_properties(src/core/FontPaths_mac.mm src/core/WebFetch_mac.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
 elseif(WIN32)
-    target_sources(tp_core PRIVATE src/core/FontPaths_win.cpp)
+    target_sources(tp_core PRIVATE src/core/FontPaths_win.cpp src/core/WebFetch_win.cpp)
+    target_link_libraries(tp_core PUBLIC winhttp ws2_32)
 else()
-    target_sources(tp_core PRIVATE src/core/FontPaths_linux.cpp)
+    target_sources(tp_core PRIVATE src/core/FontPaths_linux.cpp src/core/WebFetch_posix.cpp)
+    find_package(CURL QUIET)
+    if(CURL_FOUND)
+        target_compile_definitions(tp_core PRIVATE TEXTPLUS_HAVE_CURL)
+        target_link_libraries(tp_core PUBLIC CURL::libcurl)
+    endif()
 endif()
 target_include_directories(tp_core PUBLIC src)
 target_link_libraries(tp_core PUBLIC tp_freetype tp_harfbuzz tp_msdfgen)

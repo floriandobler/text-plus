@@ -1,6 +1,10 @@
 // Unit tests for the platform-neutral core: font database, layout, glyph SDFs.
 // Run: ./layout_test [extra-font-file ...]
 #include "core/Animator.h"
+#include "core/LiveData.h"
+#include "core/Osc.h"
+#include "core/WebFetch.h"
+#include <cstring>
 #include "core/Clock.h"
 #include "core/FontFallback.h"
 #include "core/Utf8.h"
@@ -489,6 +493,92 @@ int main( int argc, char** argv )
 			CHECK( r_lines_ok( fr ), "line boxes" );
 		}
 		std::printf( "ok   font fallback\n" );
+	}
+
+	// v2: live data (JSON, placeholders, OSC decoding), easings, 3D properties
+	{
+		std::string err;
+		Json j = Json::parse( R"({"main":{"temp":21.5,"name":"Ravensburg"},"items":[{"t":"a"},{"t":"b"}],"ok":true,"n":3,"s":"\u00e4\ud83d\ude00"})", &err );
+		CHECK( err.empty() && j.type() == Json::Type::Object, "json parse (%s)", err.c_str() );
+		CHECK( j.find( "main.temp" ) && j.find( "main.temp" )->text() == "21.5", "json number path" );
+		CHECK( j.find( "items[1].t" ) && j.find( "items[1].t" )->text() == "b", "json array path" );
+		CHECK( j.find( "items.0.t" ) && j.find( "items.0.t" )->text() == "a", "json dotted index" );
+		CHECK( j.find( "items[-1].t" ) && j.find( "items[-1].t" )->text() == "b", "json negative index" );
+		CHECK( j.find( "n" )->text() == "3" && j.find( "ok" )->text() == "true", "json whole number and bool" );
+		CHECK( j.find( "s" )->text() == "\xC3\xA4\xF0\x9F\x98\x80", "json unicode escapes" );
+		CHECK( !j.find( "main.nope" ) && !j.find( "items[5]" ), "json missing paths" );
+		Json bad = Json::parse( "{\"a\":", &err );
+		CHECK( bad.isNull() && !err.empty(), "json error reported" );
+		CHECK( j.outline().find( "main.temp: 21.5" ) != std::string::npos && j.outline().find( "items[1].t: b" ) != std::string::npos, "json outline: %s", j.outline().c_str() );
+
+		PlaceholderContext ctx;
+		ctx.bpm    = 128;
+		ctx.beats  = 9.5;// bar 3, beat 2
+		ctx.slide  = 2;
+		ctx.slides = 5;
+		ctx.json   = &j;
+		bool found = false;
+		std::string e = expandPlaceholders( "{bpm} BPM, bar {bar} beat {beat}, {slide}/{slides}, {main.name} {main.temp}\u00b0", ctx, &found );
+		CHECK( found && e == "128 BPM, bar 3 beat 2, 2/5, Ravensburg 21.5\u00b0", "placeholders: %s", e.c_str() );
+		e = expandPlaceholders( "{#ff0000}red{/} {{literal}} {unknown}", ctx, &found );
+		CHECK( !found && e == "{#ff0000}red{/} {{literal}} {unknown}", "colour tags and unknown stay: %s", e.c_str() );
+		Variables::instance().set( "/score/home", "3" );
+		e = expandPlaceholders( "Home {/score/home}", ctx, &found );
+		CHECK( found && e == "Home 3", "osc variable: %s", e.c_str() );
+
+		// OSC message "/score/away" ",isf" 7 "Gast" 0.5 and a bundle around it
+		std::vector< uint8_t > msg;
+		auto pad  = [ & ]() { while( msg.size() % 4 ) msg.push_back( 0 ); };
+		auto str  = [ & ]( const char* t ) { for( const char* c = t; *c; ++c ) msg.push_back( (uint8_t)*c ); msg.push_back( 0 ); pad(); };
+		auto i32  = [ & ]( uint32_t v ) { msg.push_back( v >> 24 ); msg.push_back( v >> 16 ); msg.push_back( v >> 8 ); msg.push_back( v ); };
+		str( "/score/away" );
+		str( ",isf" );
+		i32( 7 );
+		str( "Gast" );
+		float half = 0.5f;
+		uint32_t bits;
+		std::memcpy( &bits, &half, 4 );
+		i32( bits );
+		auto dec = OscReceiver::decode( msg.data(), msg.size() );
+		CHECK( dec.size() == 1 && dec[ 0 ].first == "/score/away" && dec[ 0 ].second == "7 Gast 0.5", "osc decode: %s",
+			   dec.empty() ? "-" : dec[ 0 ].second.c_str() );
+		std::vector< uint8_t > inner = msg;
+		msg.clear();
+		str( "#bundle" );
+		i32( 0 );
+		i32( 1 );
+		i32( (uint32_t)inner.size() );
+		msg.insert( msg.end(), inner.begin(), inner.end() );
+		dec = OscReceiver::decode( msg.data(), msg.size() );
+		CHECK( dec.size() == 1 && dec[ 0 ].second == "7 Gast 0.5", "osc bundle" );
+		msg.resize( 10 );
+		dec = OscReceiver::decode( msg.data(), msg.size() );
+		CHECK( dec.empty(), "osc truncated packet ignored" );
+
+		CHECK( detectWebFormat( "https://x/pub?output=csv", "text/plain", "a,b" ) == WebFormat::Csv, "csv by url" );
+		CHECK( detectWebFormat( "https://x/api", "application/json; charset=utf-8", "" ) == WebFormat::Json, "json by type" );
+		CHECK( detectWebFormat( "https://x/raw", "text/plain", "  [1,2]" ) == WebFormat::Json, "json by body" );
+
+		for( AnimEase ez : { AnimEase::Bounce, AnimEase::Elastic, AnimEase::EaseIn } )
+			CHECK( std::fabs( applyEase( ez, 0.0f ) ) < 1e-4f && std::fabs( applyEase( ez, 1.0f ) - 1.0f ) < 1e-4f, "ease %d ends", (int)ez );
+		CHECK( applyEase( AnimEase::Elastic, 0.15f ) > 1.2f, "elastic overshoots" );
+
+		std::vector< AnimItem > items( 3 );
+		for( int k = 0; k < 3; ++k )
+			items[ k ].charIndex = items[ k ].wordIndex = k;
+		AnimatorParams ap;
+		ap.mode         = AnimMode::Constant;
+		ap.progress     = 1.0f;
+		ap.rotationXDeg = 90.0f;
+		ap.depth        = 100.0f;
+		ap.trackingPx   = 10.0f;
+		ap.blurPx       = 4.0f;
+		std::vector< GlyphState > st( 3 );
+		applyAnimator( items, UnitCounts{ 3, 3, 1 }, ap, st );
+		CHECK( std::fabs( st[ 0 ].rotationX - 1.5708f ) < 1e-3f && st[ 1 ].depth == 100.0f && st[ 2 ].blur == 4.0f, "3D properties" );
+		CHECK( std::fabs( st[ 0 ].dx + 10.0f ) < 1e-3f && std::fabs( st[ 1 ].dx ) < 1e-3f && std::fabs( st[ 2 ].dx - 10.0f ) < 1e-3f, "tracking spreads from the centre" );
+		CHECK( usesProjection( ap ), "projection detected" );
+		std::printf( "ok   live data, osc, easing, 3D properties\n" );
 	}
 
 	std::printf( g_failures ? "\n%d FAILURES\n" : "\nALL TESTS PASSED\n", g_failures );
