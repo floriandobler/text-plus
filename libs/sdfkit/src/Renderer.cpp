@@ -429,7 +429,8 @@ float rough( ivec2 ip )
 	vec2 q = toBlock( vec2( ip ) + 0.5 ) / max( uRough.x, 1.0 ) + uRough.zw;
 	return uRough.y * ( 0.7 * vnoise( q ) + 0.3 * vnoise( q * 2.31 + 17.3 ) );
 }
-
+)GLSL"
+R"GLSL(
 void addEntry( vec4 a, vec4 b, float set )
 {
 	if( nE >= kMaxEntries )
@@ -504,7 +505,8 @@ vec4 inputColor( vec2 frag )
 	vec2 uv = frag / uFieldSize * uInputMax;
 	return texture( uInput, uv );// premultiplied (FFGL convention)
 }
-
+)GLSL"
+R"GLSL(
 void main()
 {
 	vec2 frag = gl_FragCoord.xy - uViewportOrigin;
@@ -658,7 +660,8 @@ void main()
 		}
 	}
 #endif
-
+)GLSL"
+R"GLSL(
 	// ---- The integral over the opacity threshold t ----
 	// Going from the most opaque shape down, the shapes with opacity >= t only
 	// ever grow, so unions and tint sums are running values and every level is
