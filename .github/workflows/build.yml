@@ -70,14 +70,15 @@ jobs:
           ./build-mac/ffgl_test_host build-mac/TextPlus.bundle smoke/ring.png 960 400 \
             "Text=SPINNING RING · MACOS · " "Size=60" "Path=4" "Path Tilt=15" "+Look=7" @expectInk=1 @frames=20
           # Diagnostics for 3D animators on Apple's renderer (prints the ink of each variant)
+          N=0
           for V in "A1 Mode=1|A1 Rotation X=90|A1 Progress=0.5" "A1 Mode=1|A1 Rotation X=90|A1 Progress=1" \
-                   "A1 Mode=1|A1 Opacity=0|A1 Progress=0.5" "A1 Mode=1|A1 Depth=800|A1 Progress=0.5" \
-                   "A1 Mode=1|A1 Skew=30|A1 Progress=0.5" "A1 Mode=1|A1 Rotation Y=90|A1 Progress=0.5" \
-                   "A1 Mode=5|A1 Rotation X=40|A1 Progress=1" "A1 Mode=5|A1 Rotation X=40|A1 Progress=1|Perspective=10000"; do
+                   "A1 Mode=1|A1 Opacity=0|A1 Progress=0.5" "A1 Mode=1|A1 Opacity=0|A1 Progress=1" "A1 Mode=1|A1 Depth=800|A1 Progress=0.5" \
+                   "A1 Mode=1|A1 Skew=30|A1 Progress=0.5" "A1 Mode=1|A1 Rotation Y=90|A1 Progress=0.5" "A1 Mode=5|A1 Opacity=50|A1 Progress=1" \
+                   "A1 Mode=5|A1 Rotation X=40|A1 Progress=1" "A1 Mode=1|A1 Offset Y=100|A1 Progress=0.5" "Path=4" "Path=4|A1 Mode=1|A1 Opacity=0|A1 Progress=0.5"; do
+            N=$((N+1))
             IFS='|' read -ra A <<< "$V"
-            echo "variant: $V"
-            ./build-mac/ffgl_test_host build-mac/TextPlus.bundle smoke/diag.png 960 300 "Text=FLIP IN 3D" "Size=110" "${A[@]}" @frames=20 \
-              "@print=A1 Mode,A1 Rotation X,A1 Progress" | grep -E "ink|A1 " || true
+            echo "variant $N: $V"
+            ./build-mac/ffgl_test_host build-mac/TextPlus.bundle smoke/diag_$N.png 960 300 "Text=FLIP IN 3D" "Size=110" "${A[@]}" @frames=30 @expectInk=1 | grep -E "ink" || true
           done
           ./build-mac/ffgl_test_host build-mac/TextPlus.bundle smoke/flip.png 960 300 \
             "Text=FLIP IN 3D" "Size=110" "+A1 Preset=19" "++A1 Progress=0.5" @expectInk=1 @frames=20 "@print=A1 Mode,A1 Rotation X,A1 Progress,A1 Opacity"
