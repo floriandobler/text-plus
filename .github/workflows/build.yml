@@ -69,8 +69,18 @@ jobs:
             "Text=Chrome" "Font=Helvetica Neue / Bold" "Size=160" "+Look=8" @expectInk=1 @frames=20
           ./build-mac/ffgl_test_host build-mac/TextPlus.bundle smoke/ring.png 960 400 \
             "Text=SPINNING RING · MACOS · " "Size=60" "Path=4" "Path Tilt=15" "+Look=7" @expectInk=1 @frames=20
+          # Diagnostics for 3D animators on Apple's renderer (prints the ink of each variant)
+          for V in "A1 Mode=1|A1 Rotation X=90|A1 Progress=0.5" "A1 Mode=1|A1 Rotation X=90|A1 Progress=1" \
+                   "A1 Mode=1|A1 Opacity=0|A1 Progress=0.5" "A1 Mode=1|A1 Depth=800|A1 Progress=0.5" \
+                   "A1 Mode=1|A1 Skew=30|A1 Progress=0.5" "A1 Mode=1|A1 Rotation Y=90|A1 Progress=0.5" \
+                   "A1 Mode=5|A1 Rotation X=40|A1 Progress=1" "A1 Mode=5|A1 Rotation X=40|A1 Progress=1|Perspective=10000"; do
+            IFS='|' read -ra A <<< "$V"
+            echo "variant: $V"
+            ./build-mac/ffgl_test_host build-mac/TextPlus.bundle smoke/diag.png 960 300 "Text=FLIP IN 3D" "Size=110" "${A[@]}" @frames=20 \
+              "@print=A1 Mode,A1 Rotation X,A1 Progress" | grep -E "ink|A1 " || true
+          done
           ./build-mac/ffgl_test_host build-mac/TextPlus.bundle smoke/flip.png 960 300 \
-            "Text=FLIP IN 3D" "Size=110" "+A1 Preset=19" "++A1 Progress=0.5" @expectInk=1 @frames=20
+            "Text=FLIP IN 3D" "Size=110" "+A1 Preset=19" "++A1 Progress=0.5" @expectInk=1 @frames=20 "@print=A1 Mode,A1 Rotation X,A1 Progress,A1 Opacity"
           ./build-mac/ffgl_test_host build-mac/TextPlus.bundle smoke/web.png 1280 300 \
             "Source=3" "URL=https://api.github.com/repos/floriandobler/text-plus" "Text={full_name} · {stargazers_count} stars" \
             "Size=60" @frames=300 "@print=Refresh" || true
