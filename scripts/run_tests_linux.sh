@@ -70,8 +70,11 @@ grep -q "UI: 29 visible rows" out/ui_default.txt || { echo "ERROR: default inter
 $H $P out/migrate.png 640 200 "Text=Old" "Outline Width=8" "Outline 2 Width=3" "Shadow Distance=6" "Inner Glow Radius=10" "@print=Outline,Shadow,Glow" | tee out/migrate.txt
 grep -q "Outline *= 2 " out/migrate.txt && grep -q "Shadow *= 1 " out/migrate.txt && grep -q "Glow *= 2 " out/migrate.txt || { echo "ERROR: 1.x migration of the effect menus"; exit 1; }
 # 2.x compositions: a menu that is off stays off, even with a width set
-$H $P out/migrate2.png 640 200 "Text=New" "Outline=0" "Outline Width=8" "@print=Outline" | tee out/migrate2.txt
+$H $P out/migrate2.png 640 200 "Text=New" "Composition Format=2" "Outline=0" "Outline Width=8" "@print=Outline" | tee out/migrate2.txt
 grep -q "Outline *= 0 " out/migrate2.txt || { echo "ERROR: an Outline menu from the composition was overridden"; exit 1; }
+# A host that also sends the default of the new menus (Outline=0) to a 1.x composition
+$H $P out/migrate3.png 640 200 "Text=Old" "Outline=0" "Outline Width=8" "@print=Outline,Composition Format" | tee out/migrate3.txt
+grep -q "Outline *= 1 " out/migrate3.txt && grep -q "Composition Format *= 2 " out/migrate3.txt || { echo "ERROR: 1.x migration with re-sent defaults"; exit 1; }
 # Switching an effect on gives it a visible size
 $H $P out/switch_on.png 640 200 "Text=On" "+Glow=1" "@print=Glow Radius" | tee out/switch_on.txt
 grep -q "Glow Radius *= [1-9]" out/switch_on.txt || { echo "ERROR: switching Glow on left the radius at 0"; exit 1; }

@@ -104,6 +104,8 @@ void TextSource::defineParameters()
 	// Text+ 1.0 had "Slides" (Off / Each Line / Blocks); kept hidden so old
 	// compositions open with the matching Display.
 	defOption( P_SLIDES_LEGACY, "Slides", kGroupText, { "Off", "Each Line", "Blocks" }, 0 );
+	// 1 = made before 2.0 (or new); the first frame sets 2, which the composition then stores
+	defRange( P_FORMAT, "Composition Format", kGroupText, 1.0f, 0.0f, 100.0f );
 
 	// ---- Font: the menus; "Font" (Advanced) is the stored, typeable name the menus write into ----
 	defOption( P_FAMILY, "Family", kGroupFont, std::vector< const char* >{ "(scanning fonts...)" }, 0 );
@@ -351,6 +353,7 @@ void TextSource::updateVisibility()
 	show( P_ROLL_LOOP, roll );
 	show( P_EDGE_FADE, ticker || roll );
 	show( P_SLIDES_LEGACY, false );
+	show( P_FORMAT, false );
 
 	// Lines: with both styles own, "Edit Line" picks which six rows show
 	const bool own2 = (int)values[ P_L2_MODE ] == 1, own3 = (int)values[ P_L3_MODE ] == 1;
@@ -512,19 +515,25 @@ bool TextSource::isModeParam( unsigned index ) const
 void TextSource::deriveModesFromValues()
 {
 	// A composition from 1.x has no Outline / Shadow / Glow menus: switch on what
-	// its values use, so it looks exactly as before. (A 2.x composition sends them.)
-	if( !modeFromHost[ 0 ] )
+	// its values use, so it looks exactly as before. A 2.x composition carries
+	// Composition Format 2; a menu that is on came from a 2.x composition anyway.
+	// Whether the host also re-sends defaults for unknown parameters does not matter.
+	const bool old = values[ P_FORMAT ] < 1.5f;
+	setValue( P_FORMAT, 2.0f );
+	if( !old )
+		return;
+	if( (int)values[ P_OUTLINE_MODE ] == OUTLINE_OFF )
 	{
 		const int m = values[ P_OL2_WIDTH ] > 0.0f ? OUTLINE_TWO : values[ P_OL1_WIDTH ] > 0.0f ? OUTLINE_ONE : OUTLINE_OFF;
 		setValue( P_OUTLINE_MODE, (float)m );
 	}
-	if( !modeFromHost[ 1 ] )
+	if( (int)values[ P_SHADOW_MODE ] == EFFECT_OFF )
 	{
 		const bool drop  = values[ P_SH_A ] > 0.0f && ( values[ P_SH_DISTANCE ] > 0.0f || values[ P_SH_SPREAD ] > 0.0f );
 		const bool inner = values[ P_ISH_A ] > 0.0f && values[ P_ISH_DISTANCE ] > 0.0f;
 		setValue( P_SHADOW_MODE, (float)( ( drop ? EFFECT_OUTER : 0 ) | ( inner ? EFFECT_INNER : 0 ) ) );
 	}
-	if( !modeFromHost[ 2 ] )
+	if( (int)values[ P_GLOW_MODE ] == EFFECT_OFF )
 	{
 		const bool outer = values[ P_GL_RADIUS ] > 0.0f && values[ P_GL_STRENGTH ] > 0.0f && values[ P_GL_A ] > 0.0f;
 		const bool inner = values[ P_IGL_RADIUS ] > 0.0f && values[ P_IGL_A ] > 0.0f;
@@ -732,8 +741,6 @@ FFResult TextSource::SetFloatParameter( unsigned int index, float value )
 		break;
 	}
 
-	if( isModeParam( index ) && defaultsDone )
-		modeFromHost[ index == P_OUTLINE_MODE ? 0 : index == P_SHADOW_MODE ? 1 : 2 ] = true;
 	values[ index ] = value;
 	if( live && changed && ( isModeParam( index ) || index == P_3D ) )
 		onModePicked( index, (int)previous );

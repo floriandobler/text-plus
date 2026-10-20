@@ -770,7 +770,7 @@ void main()
 	if( tPlane > 0.0 )
 	{
 		vec2 pp = ( o + d * tPlane ).xy;
-		plane   = uMode == 1 ? frontAt( pp ) : backAt( pp );
+		plane   = uMode == 1 || uDepth <= 0.0 ? frontAt( pp ) : backAt( pp );// no depth: the flat picture
 	}
 
 	vec4 col = plane;
@@ -896,8 +896,9 @@ struct Rect
 // Scissor rectangle in GL window coordinates (y up), clipped to the viewport.
 void setScissor( const Rect& r, int vpX, int vpY, int w, int h )
 {
-	int x0 = std::max( 0, (int)std::floor( r.x0 ) ), x1 = std::min( w, (int)std::ceil( r.x1 ) );
-	int y0 = std::max( 0, (int)std::floor( r.y0 ) ), y1 = std::min( h, (int)std::ceil( r.y1 ) );
+	auto px = [ & ]( float v, int hi ) { return (int)std::clamp( v, 0.0f, (float)hi ); };
+	int x0 = px( std::floor( r.x0 ), w ), x1 = px( std::ceil( r.x1 ), w );
+	int y0 = px( std::floor( r.y0 ), h ), y1 = px( std::ceil( r.y1 ), h );
 	if( x1 <= x0 || y1 <= y0 )
 	{
 		glScissor( vpX, vpY, 0, 0 );
@@ -1499,7 +1500,10 @@ void Renderer::render( const FFGLViewportStruct& vp, GLuint hostFbo, const std::
 		GLint maxTex = 4096;
 		glGetIntegerv( GL_MAX_TEXTURE_SIZE, &maxTex );
 		const float maxDim = (float)std::min( 4096, (int)maxTex ) - 4.0f;
-		k = std::min( { 1.0f, maxDim / ( blockRect.x1 - blockRect.x0 ), maxDim / ( blockRect.y1 - blockRect.y0 ) } );
+		// At most 4096 px a side and 1.5 x the output's area: the shared targets grow
+		// to the largest size seen, so a huge block must not claim gigabytes.
+		const float rw = blockRect.x1 - blockRect.x0, rh = blockRect.y1 - blockRect.y0;
+		k = std::min( { 1.0f, maxDim / rw, maxDim / rh, std::sqrt( 1.5f * (float)w * (float)h / std::max( 1.0f, rw * rh ) ) } );
 		targetW = (int)std::ceil( ( blockRect.x1 - blockRect.x0 ) * k ) + 1;
 		targetH = (int)std::ceil( ( blockRect.y1 - blockRect.y0 ) * k ) + 1;
 		originX  = -blockRect.x0 * k;
@@ -1518,7 +1522,7 @@ void Renderer::render( const FFGLViewportStruct& vp, GLuint hostFbo, const std::
 		addQuads( bbox, glyphs, t.sizePx, k, blockCos, blockSin, originX, originY );
 	if( havePlates )
 		addQuads( bbox, boxes, 1.0f, k, blockCos, blockSin, originX, originY );
-	bbox = Rect{ bbox.x0 - 2, bbox.y0 - 2, bbox.x1 + 2, bbox.y1 + 2 };
+	bbox = bbox.empty() ? Rect{ 0, 0, 0, 0 } : Rect{ bbox.x0 - 2, bbox.y0 - 2, bbox.x1 + 2, bbox.y1 + 2 };// no shapes: only the video
 	const bool shadow = s.shadow.a > 0;
 	// Whole pixels, so the shadows read the layers texel-exact.
 	const int shadowDx = (int)std::lround( s.shadowDx ), shadowDy = (int)std::lround( s.shadowDy );

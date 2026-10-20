@@ -146,6 +146,7 @@ enum ParamId : unsigned int
 	P_ROLL_LOOP,
 	P_EDGE_FADE,
 	P_SLIDES_LEGACY,// "Slides" of 1.0, hidden: migrates old compositions to Display
+	P_FORMAT,// hidden: 2 in compositions saved by 2.x (no migration then)
 	// ---- Font
 	P_FAMILY,
 	P_STYLE,
@@ -448,7 +449,7 @@ private:
 	bool live = false;// first frame rendered: value changes now come from the user
 	bool sourceFromHost = false;// the host has set "Source" (a composition made with 1.1 or later)
 	bool defaultsDone   = false;// the SDK sets every parameter to its default once, in order, after creation
-	bool modeFromHost[ 3 ] = { false, false, false };// Outline, Shadow, Glow: the composition has the 2.0 menus
+
 
 	// Line styles (index 0 = "Line 2", 1 = "Line 3+")
 	struct LineFont
