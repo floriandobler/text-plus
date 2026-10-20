@@ -27,6 +27,8 @@ out = tempfile.mkdtemp()
 for r in range(runs):
     args = [host, plugin, os.path.join(out, 'f.png'), str(random.choice([320, 640, 1280])), str(random.choice([180, 360, 720])),
             'Text=' + random.choice(texts), '@frames=12', '@dt=0.016']
+    if 'FX' in os.path.basename(plugin):
+        args.append('@input=1')
     if random.random() < 0.5:
         args.append('Font=' + random.choice(['Inter / Bold', 'DejaVu Sans / Book', 'Cantarell / Regular', 'nonexistent font', '']))
     for name, typ, lo, hi in random.sample(params, k=min(len(params), random.randint(5, 40))):
@@ -36,6 +38,8 @@ for r in range(runs):
             v = random.choice([0, 1])
         elif typ in (0,):
             v = random.choice([0, 1])
+        elif typ == 11 and name.endswith('Property'):  # + / - Property: add 1..15, remove 101..115
+            v = random.choice([random.randint(0, 16), random.randint(100, 116)])
         elif typ == 11:  # option: value, may be out of range on purpose
             v = random.randint(0, 19)
         else:

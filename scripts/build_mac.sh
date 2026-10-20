@@ -23,28 +23,30 @@ BUILD_DIR="build-mac"
 cmake -S . -B "$BUILD_DIR" -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"
 cmake --build "$BUILD_DIR" --config Release --parallel
 
-BUNDLE="$BUILD_DIR/TextPlus.bundle"
-if [[ ! -d "$BUNDLE" ]]; then
-	echo "Build finished, but $BUNDLE was not found." >&2
-	exit 1
-fi
-
-# Ad-hoc signature: enough for a plugin built on this Mac.
-codesign --force --sign - "$BUNDLE"
+BUNDLES=("$BUILD_DIR/TextPlus.bundle" "$BUILD_DIR/TextPlusFX.bundle")
+for BUNDLE in "${BUNDLES[@]}"; do
+	if [[ ! -d "$BUNDLE" ]]; then
+		echo "Build finished, but $BUNDLE was not found." >&2
+		exit 1
+	fi
+	# Ad-hoc signature: enough for a plugin built on this Mac.
+	codesign --force --sign - "$BUNDLE"
+	NAME=$(basename "$BUNDLE" .bundle)
+	lipo -info "$BUNDLE/Contents/MacOS/$NAME"
+done
 echo
-lipo -info "$BUNDLE/Contents/MacOS/TextPlus"
 
 if [[ "${1:-}" == "--install" ]]; then
 	for APP in "Resolume Arena" "Resolume Avenue"; do
 		DEST="$HOME/Documents/$APP/Extra Effects"
 		[[ -d "$HOME/Documents/$APP" ]] || continue
 		mkdir -p "$DEST"
-		rm -rf "$DEST/TextPlus.bundle" "$DEST/KonturText.bundle"
-		cp -R "$BUNDLE" "$DEST/"
+		rm -rf "$DEST/TextPlus.bundle" "$DEST/TextPlusFX.bundle" "$DEST/KonturText.bundle"
+		cp -R "${BUNDLES[@]}" "$DEST/"
 		echo "Installed to: $DEST"
 	done
-	echo "Restart Resolume. The plugin is called \"Text+\" and is listed under Sources."
+	echo "Restart Resolume. \"Text+\" is listed under Sources, \"Text+ FX\" under Effects."
 else
-	echo "Done: $BUNDLE"
+	echo "Done: ${BUNDLES[*]}"
 	echo "Install: ./scripts/build_mac.sh --install"
 fi

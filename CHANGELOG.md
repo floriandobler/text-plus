@@ -1,5 +1,51 @@
 # Changelog
 
+## 2.0.0
+
+**A clearer panel**
+- The empty panel shows 22 rows in 7 groups instead of 52 in 13; a typical lower third needs 63 rows instead of 100. Rows appear when a menu asks for them, never through slider values.
+- Display names (FFGL 2.3, Resolume 7.4+): rows read "Offset X" instead of "A1 Offset X". The stored names are unchanged, so compositions and OSC addresses keep working.
+- *Style* replaces the groups *Fill*, *Outline*, *Shadow* and *Glow*: a *Look* menu, the fill, and up to six **effect slots**. A slot's type sets what its rows are called and which ones show. The next empty slot appears once the previous one is used.
+- Animators show only the properties you add with *+ / - Property*. A property that does something (from a composition, OSC or MIDI) shows itself.
+- *Placement*: Center, Top, Bottom, Left, Right, the four corners and Lower Third, with a margin that adapts to any resolution. *Custom* shows position, rotation and anchors.
+- *Align*, *Leading* and the *Line 2* / *Line 3+* groups appear when the text has more than one line. *Options* sit behind *Show Options*.
+
+**Look**
+- **Looks**: Clean, Outline, Double Outline, Hollow, Soft Shadow, Long Shadow, Comic, Neon, Chrome, Retro 3D, Emboss, Glass, Contours, Ink, Lower Third Bar. Their sizes follow the text size.
+- **Effect stack**: Outline (several, stacking outwards), Glow (several), Shadow (up to three), Inner Glow, Inner Shadow (up to two, each with its own angle), **Bevel** (Smooth, Chisel, Chrome), **Extrude** (2.5D depth with shading, also long shadows), **Contours** (rings around or inside the text), **Roughen** (noisy edges, loopable).
+- **Weight**: makes any font bolder or thinner through the distance field.
+- New fills: radial gradient, stripes, halftone.
+
+**3D and paths**
+- Characters turn in 3D (*Rotation X*, *Rotation Y*), move in depth (*Depth*) and slant (*Skew*), with a perspective (*Camera Distance*).
+- *Path*: Arc (bend up or down), Circle, Wave and a **Ring** that spins in 3D; *Offset* / *Spin* / *Phase* move the text along.
+
+**Content and live data**
+- Placeholders in every source: `{bpm}`, `{beat}`, `{bar}`, `{slide}`, `{slides}`, `{time}`, `{time:s}`, `{date}`, `{date:iso}`, `{weekday}`.
+- **OSC receiver** (*Options → OSC Port*): every address becomes a variable, shown with `{/score/home}`. Shared by all Text+ instances.
+- **Web (URL)** source: JSON (the text fields are the template, e.g. `{main.temp} °C`), CSV (rows become slides, works with published Google Sheets) or plain text, refreshed in the background. Without placeholders the JSON's fields are listed with their paths.
+- JSON files work like JSON from the web.
+- Countdowns: *Warn At* switches to a warning colour (optionally blinking) when time runs out.
+- Display **Slides: Words** (one word after another) and **Pattern** (rows of text filling the screen, alternating directions).
+- Equal-width digits for clocks, web data and OSC values.
+
+**Animation**
+- A third animator; each appears once the one before it runs.
+- New properties: *Depth*, *Rotation X*, *Rotation Y*, *Skew*, *Tracking*, *Blur*, *Weight*.
+- Easing: *Ease In*, *Bounce*, *Elastic*.
+- Presets: Flip In / Out, Swing In, Depth In (3D), Blur In, Track In, Bounce In, Elastic Pop, Skew In, Weight Pulse.
+
+**Text+ FX** (new plugin, effect)
+- Everything of Text+ as an effect on a clip: text over the video, the video inside the text, or the video cut by the text.
+
+**Compatibility**
+- Compositions from 1.1 open with the same look: the old Outline, Shadow and Glow settings are translated into effect slots (tested pixel-identical). Position, rotation or anchors that are not at their defaults set *Placement* to *Custom*.
+
+**Under the hood**
+- The composite comes in a small variant (the 1.1 feature set) and a full one that is compiled on first use of bevel, extrude, contours, roughen or Text+ FX.
+- Glyphs in 3D measure their distances in screen space; flat glyphs keep the exact 1.1 path.
+- New unit tests (JSON, placeholders, OSC decoding, easing, 3D properties), panel dumps in the test host (`@ui=`), input textures for effects (`@input=1`); ASan/UBSan clean, OSC fuzzed with 320 000 random packets.
+
 ## 1.1.0
 
 **Content**

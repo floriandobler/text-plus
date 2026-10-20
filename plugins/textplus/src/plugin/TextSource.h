@@ -453,6 +453,8 @@ private:
 	int webFormat    = 0;
 	std::string webBody;
 	Json webJson;
+	Json fileJson;
+	int64_t jsonFileStamp = -2;
 	int oscPort      = 0;
 	double lastBpm   = 0.0;
 	double remainingSeconds = 1e30;// countdowns: seconds left (for the warning colour)

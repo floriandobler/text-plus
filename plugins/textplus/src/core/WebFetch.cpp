@@ -3,6 +3,7 @@
 #include "Clock.h"
 
 #include <algorithm>
+#include <cctype>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>

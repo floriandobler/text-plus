@@ -9,6 +9,7 @@
 #include "core/WebFetch.h"
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -343,6 +344,16 @@ std::vector< std::string > splitSlides( const std::string& src, int mode, bool p
 	if( out.empty() )
 		out.push_back( std::string() );
 	return out;
+}
+
+// Lines of a text as written: newlines, "\\n" and (if on) "|" break lines.
+int sourceLines( const std::string& t, bool pipeIsNewline )
+{
+	int n = 1;
+	for( size_t i = 0; i < t.size(); ++i )
+		if( t[ i ] == '\n' || ( t[ i ] == '|' && pipeIsNewline ) || ( t[ i ] == '\\' && i + 1 < t.size() && t[ i + 1 ] == 'n' ) )
+			++n;
+	return n;
 }
 
 int positiveMod( int a, int n )
@@ -894,7 +905,8 @@ void TextSource::updateVisibility()
 	// slider values, so the list never jumps under the mouse while dragging.
 	const int src       = source();
 	const int disp      = display();
-	const bool typed    = src == SOURCE_INPUT || src == SOURCE_CLOCK || src == SOURCE_WEB;// clock and web use the fields as template
+	const bool jsonFile = src == SOURCE_FILE && textFile.size() > 5 && ( textFile.compare( textFile.size() - 5, 5, ".json" ) == 0 || textFile.compare( textFile.size() - 5, 5, ".JSON" ) == 0 );
+	const bool typed    = src == SOURCE_INPUT || src == SOURCE_CLOCK || src == SOURCE_WEB || jsonFile;// clock, web and JSON use the fields as template
 	const bool fromFile = src == SOURCE_FILE;
 	show( P_TEXT, typed );
 	for( int i = 0; i < kExtraLines; ++i )
@@ -906,7 +918,7 @@ void TextSource::updateVisibility()
 	show( P_CSV_HEADER, fromFile && csvActive );
 	show( P_URL, src == SOURCE_WEB );
 	show( P_URL_REFRESH, src == SOURCE_WEB );
-	label( P_TEXT, src == SOURCE_CLOCK || src == SOURCE_WEB ? "Template" : "Text" );
+	label( P_TEXT, src == SOURCE_CLOCK || src == SOURCE_WEB || jsonFile ? "Template" : "Text" );
 
 	const bool clock = src == SOURCE_CLOCK;
 	const int tm     = (int)values[ P_TIMER_MODE ];
@@ -1297,8 +1309,10 @@ FFResult TextSource::SetTextParameter( unsigned int index, const char* value )
 		{
 			textFile            = v;
 			textFileStamp       = -1;
+			jsonFileStamp       = -2;
 			textFilePollCounter = 0;
 			textFileContent.clear();
+			updateVisibility();// a JSON file shows the template field
 			// Text+ 1.0 compositions have no "Source": a file there means "show the file".
 			if( !v.empty() && !live && !sourceFromHost && source() == SOURCE_INPUT )
 			{
@@ -1869,7 +1883,25 @@ std::string TextSource::sourceText()
 	if( source() == SOURCE_FILE )
 	{
 		pollTextFile();
-		return !textFile.empty() && textFileStamp >= 0 ? textFileContent : std::string();
+		if( textFile.empty() || textFileStamp < 0 )
+			return {};
+		std::string lowerPath = textFile;
+		std::transform( lowerPath.begin(), lowerPath.end(), lowerPath.begin(), []( unsigned char c ) { return (char)std::tolower( c ); } );
+		if( lowerPath.size() > 5 && lowerPath.compare( lowerPath.size() - 5, 5, ".json" ) == 0 )
+		{
+			// A JSON file works like JSON from the web: the text fields are the template.
+			if( textFileStamp != jsonFileStamp )
+			{
+				jsonFileStamp = textFileStamp;
+				fileJson      = Json::parse( textFileContent );
+			}
+			PlaceholderContext ctx = placeholderContext();
+			ctx.json               = &fileJson;
+			bool found             = false;
+			const std::string out  = expandPlaceholders( typedText(), ctx, &found );
+			return found ? out : fileJson.outline();
+		}
+		return textFileContent;
 	}
 	if( source() == SOURCE_WEB )
 	{
@@ -1964,9 +1996,24 @@ std::string TextSource::currentText()
 		const std::string value = timerValueText( hide );
 		shown                   = hide ? std::string() : expandTimeTemplate( shown, value, localNow() );
 	}
+	// Lines per slide decide which rows matter (Align, Leading, Line 2, Line 3+)
+	{
+		const bool pipe = values[ P_PIPE_NEWLINE ] > 0.5f;
+		int lines       = 1;
+		if( ( csv || slidesOn() ) && !slides.empty() )
+			for( const std::string& sl : slides )
+				lines = std::max( lines, sourceLines( sl, pipe ) );
+		else
+			lines = sourceLines( shown, pipe );
+		if( lines != multiLineCount )
+		{
+			multiLineCount = lines;
+			multiLine      = lines > 1;
+			updateVisibility();
+		}
+	}
 	// {bpm}, {slide}, {/osc/address} ... in every source
-	if( source() != SOURCE_WEB || webFormat != (int)WebFormat::Json )
-		shown = expandPlaceholders( shown, placeholderContext() );
+	shown = expandPlaceholders( shown, placeholderContext() );// (JSON sources already resolved theirs; this adds {bpm}, {/osc} ...)
 	return applyCase( shown, (TextCase)std::clamp( (int)values[ P_CASE ], 0, 2 ) );
 }
 
@@ -2511,7 +2558,7 @@ void TextSource::applyLook( int look )
 		break;
 	case LOOK_CONTOURS:
 		fill( 0, 0, 0, 1, 1 );
-		add( { T::Contours, 0.5f, 0.85f, 1, 1, 0, 0, 1, 1, 18, 0, 200, 0, 22, 0 } );
+		add( { T::Contours, 0.5f, 0.85f, 1, 1, 0, 0, 1, 1, 18, 0, 130, 0, 22, 0 } );
 		break;
 	case LOOK_INK:
 		fill( 0, 0, 0, 0.95f, 1 );
@@ -2525,6 +2572,8 @@ void TextSource::applyLook( int look )
 	default:
 		return;
 	}
+	// Looks are designed for 160 px text; pixel values follow the current size.
+	const float k = std::clamp( values[ P_SIZE ] / 160.0f, 0.2f, 6.0f );
 	for( int f = 0; f < kNumFx; ++f )
 	{
 		auto id = [ & ]( FxParam p ) { return fxParam( f, p ); };
@@ -2532,7 +2581,7 @@ void TextSource::applyLook( int look )
 		{
 			const FxSpec& e = fx[ f ];
 			setValue( id( FX_TYPE ), (float)e.type );
-			const float v[] = { e.h, e.s, e.b, e.a, e.h2, e.s2, e.b2, e.a2, e.size, e.soft, e.dist, e.angle, e.amount, e.mode };
+			const float v[] = { e.h, e.s, e.b, e.a, e.h2, e.s2, e.b2, e.a2, e.size * k, e.soft * k, e.dist * k, e.angle, e.amount, e.mode };
 			for( int k = 0; k < 14; ++k )
 				setValue( id( (FxParam)( FX_COLOR_H + k ) ), v[ k ] );
 			lastFxType[ f ] = (int)e.type;

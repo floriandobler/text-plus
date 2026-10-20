@@ -7,7 +7,7 @@
 #     (host re-sending values, slide stepping, CSV, line styles, random parameters).
 #
 # Packages (Ubuntu 24.04): cmake ninja-build libglew-dev libegl-dev libgl1-mesa-dri
-#                          fonts-dejavu-core fonts-cantarell fonts-inter python3
+#                          fonts-dejavu-core fonts-cantarell fonts-inter python3 (libcurl4-openssl-dev for https)
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -61,6 +61,34 @@ $H $P out/fallback.png 1100 300 "Text=Emoji 🎉 👍🏽 1️⃣ 🇩🇪" "Tex
 # 1.0 compositions: "Slides" and a text file become Display / Source
 $H $P out/legacy.png 640 200 "Slides=1" "Text=A|B|C" @print=Display | tee out/legacy.txt
 grep -q "Display *= 1 " out/legacy.txt || { echo "ERROR: legacy Slides -> Display"; exit 1; }
+# ---- 2.0 ----
+# The empty panel stays short (rows as Resolume shows them)
+$H $P out/panel.png 640 360 "@ui=out/panel.txt" @frames=4
+grep -q "^22 rows in 7 groups" out/panel.txt || { echo "ERROR: empty panel is not 22 rows / 7 groups:"; tail -1 out/panel.txt; exit 1; }
+# 1.1 compositions: outline / shadow / glow become effect slots, the legacy rows stay hidden
+$H $P out/migrate.png 960 300 "Text=Migrated" "Font=Inter / Black" "Size=120" "Outline Width=12" "Outline 2 Width=6" "Shadow Distance=10" "Glow Radius=30" @frames=12 @expectInk=1 "@print=Effect 1,Effect 2,Effect 3,Effect 4,Outline Width" "@ui=out/migrate_ui.txt" | tee out/migrate.txt
+grep -q "Effect 1 *= 1 " out/migrate.txt && grep -q "Effect 2 *= 1 " out/migrate.txt && grep -q "Effect 3 *= 2 " out/migrate.txt && grep -q "Effect 4 *= 3 " out/migrate.txt && grep -q "Outline Width *= 0 " out/migrate.txt || { echo "ERROR: 1.1 effects not migrated"; exit 1; }
+! grep -q "Shadow Distance\|Glow Radius" out/migrate_ui.txt || { echo "ERROR: legacy rows visible"; exit 1; }
+# Looks, effects, fills
+for L in 6 7 8 9 11 13 16; do $H $P out/look_$L.png 640 240 "Text=Look $L" "Font=Inter / Black" "Size=100" "+Look=$L" @frames=16 @expectInk=1 > /dev/null; done
+$H $P out/bevel.png 640 240 "Text=Bevel" "Font=Inter / Black" "Size=120" "+Effect 1=6" "++Effect 1 Mode=1" @frames=16 @expectInk=1
+$H $P out/fills.png 960 240 "Text=Halftone" "Font=Inter / Black" "Size=120" "Fill Mode=5" "Fill Color 2=0.95" "Gradient Angle=-90" @frames=16 @expectInk=1
+# 3D and paths
+$H $P out/flip.png 960 240 "Text=FLIP IN 3D" "Font=Inter / Black" "Size=100" "+A1 Preset=19" "++A1 Progress=0.5" @frames=16 @expectInk=1 "@print=A1 Rotation X,Perspective" | tee out/flip.txt
+grep -q "A1 Rotation X *= 90 " out/flip.txt || { echo "ERROR: flip preset"; exit 1; }
+for PA in 1 2 3 4; do $H $P out/path_$PA.png 800 320 "Text=TEXT ON A PATH · " "Font=Inter / Black" "Size=48" "Path=$PA" @frames=16 @expectInk=1 > /dev/null; done
+# Displays: words, pattern
+$H $P out/words.png 640 200 "Display=5" "Text=one two three" "Slide=0.5" @print=Slide @frames=8 | tee out/words.txt
+grep -q "(2 / 3)" out/words.txt || { echo "ERROR: word slides"; exit 1; }
+$H $P out/pattern.png 960 400 "Display=6" "Text=PATTERN" "Font=Inter / Black" "Size=50" @dt=0.05 @frames=20 @expectInk=1
+# Live data: placeholders, JSON file as template, countdown warning
+printf '{"city":"Ravensburg","now":{"temp":17.4}}' > out/data.json
+$H $P out/json.png 960 200 "Source=1" "Text File=out/data.json" "Text={city} {now.temp}" "Font=Inter / Bold" "Size=60" @frames=12 @expectInk=1
+$H $P out/warn.png 960 200 "Source=2" "Timer Mode=2" "Duration=0:30" "Warn At=60" "Text={timer} · {weekday}" "Font=Inter / Black" "Size=70" @frames=10 @expectInk=1
+# Text+ FX on an input texture
+F=build/TextPlusFX.so
+for IM in 0 1 2; do $H $F out/fx_$IM.png 960 300 @input=1 "Input=$IM" "Text=FX" "Font=Inter / Black" "Size=160" "+Effect 1=1" @frames=12 @expectInk=1 > /dev/null; done
 # Robustness: random parameter combinations (no crash, GL error or state leak)
 python3 plugins/textplus/tests/fuzz_params.py $H $P 20
+python3 plugins/textplus/tests/fuzz_params.py $H $F 5
 echo "Images in out/"
