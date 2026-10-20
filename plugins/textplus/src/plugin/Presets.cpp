@@ -301,7 +301,7 @@ void TextSource::applyLook( int look )
 	case LOOK_STICKER:
 		color( P_FILL_H, 0.97f, 0.75f, 1.0f, 1.0f );
 		setValue( P_OUTLINE_MODE, OUTLINE_TWO );
-		setValue( P_OL1_WIDTH, px( 0.09f ) );
+		setValue( P_OL1_WIDTH, px( 0.12f ) );// wide enough to close the gaps between letters
 		color( P_OL1_H, 0.0f, 0.0f, 1.0f, 1.0f );
 		setValue( P_OL2_WIDTH, px( 0.015f ) );
 		color( P_OL2_H, 0.0f, 0.0f, 0.75f, 1.0f );

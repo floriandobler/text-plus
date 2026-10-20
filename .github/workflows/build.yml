@@ -37,8 +37,11 @@ jobs:
           cmake -S . -B build-mac -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" -DPLUS_BUILD_TESTS=ON
           cmake --build build-mac --config Release --parallel
           codesign --force --sign - build-mac/TextPlus.bundle
+          codesign --force --sign - build-mac/TextPlusFill.bundle
           lipo -info build-mac/TextPlus.bundle/Contents/MacOS/TextPlus
+          lipo -info build-mac/TextPlusFill.bundle/Contents/MacOS/TextPlusFill
           codesign --verify --verbose build-mac/TextPlus.bundle
+          codesign --verify --verbose build-mac/TextPlusFill.bundle
 
       - name: Smoke test (loads the bundle like Resolume, renders with Apple's OpenGL 4.1)
         run: |
@@ -58,22 +61,33 @@ jobs:
             "Text=Emoji 🎉 1️⃣ 中文 日本語 한국어 עברית" "Font=Helvetica Neue / Regular" "Size=70" "Outline Width=4" @expectInk=1 @frames=40
           ./build-mac/ffgl_test_host build-mac/TextPlus.bundle smoke/ticker.png 1280 200 \
             "Display=3" "Text=Ticker on macOS" "Scroll Speed=300" "Plate=1" @dt=0.05 @frames=30 @expectInk=1
+          ./build-mac/ffgl_test_host build-mac/TextPlus.bundle smoke/extrude.png 1280 720 \
+            "Text=Text+ 2.0" "Font=Helvetica Neue / Bold" "Size=220" "+Look=9" @frames=20 @expectInk=1
+          ./build-mac/ffgl_test_host build-mac/TextPlus.bundle smoke/path_patterns.png 960 600 \
+            "Text=AROUND THE RING • " "Font=Helvetica Neue / Bold" "Size=60" "Path=2" "Path Radius=220" "Fill Mode=3" "Outline=1" "Outline Width=3" @expectInk=1
+          ./build-mac/ffgl_test_host build-mac/TextPlusFill.bundle smoke/fill_video.png 960 300 \
+            "Text=VIDEO" "Font=Helvetica Neue / Bold" "Size=220" "Video=2" @input=photo @expectInk=1
+          ./build-mac/ffgl_test_host build-mac/TextPlus.bundle smoke/ui.png 320 180 @ui=count
           python3 plugins/textplus/tests/fuzz_params.py build-mac/ffgl_test_host build-mac/TextPlus.bundle 15
+          python3 plugins/textplus/tests/fuzz_params.py build-mac/ffgl_test_host build-mac/TextPlusFill.bundle 5
 
       - name: Package
         run: |
           VERSION=$(sed -nE 's/^project\(ResolumePlus VERSION ([0-9.]+).*/\1/p' CMakeLists.txt)
           mkdir -p dist/TextPlus
-          cp -R build-mac/TextPlus.bundle dist/TextPlus/
+          cp -R build-mac/TextPlus.bundle build-mac/TextPlusFill.bundle dist/TextPlus/
           cp LICENSE THIRD_PARTY_NOTICES.md dist/TextPlus/
           cat > dist/TextPlus/INSTALL.txt <<TXT
           Text+ ${VERSION} for Resolume Arena / Avenue 7 (macOS 11+, Apple Silicon and Intel)
 
-          1. Copy TextPlus.bundle to ~/Documents/Resolume Arena/Extra Effects
+          TextPlus.bundle      the source "Text+"
+          TextPlusFill.bundle  the effect "Text+ Fill" (text over, filled with or cut out of a clip)
+
+          1. Copy both bundles to ~/Documents/Resolume Arena/Extra Effects
              (or Resolume Avenue; see Preferences > Video > FFGL for your plugin folder).
-          2. The bundle is not notarised. Remove the download quarantine once in Terminal:
-             xattr -dr com.apple.quarantine ~/Documents/"Resolume Arena"/"Extra Effects"/TextPlus.bundle
-          3. Restart Resolume. Text+ is listed under Sources.
+          2. The bundles are not notarised. Remove the download quarantine once in Terminal:
+             xattr -dr com.apple.quarantine ~/Documents/"Resolume Arena"/"Extra Effects"/TextPlus*.bundle
+          3. Restart Resolume. Text+ is listed under Sources, Text+ Fill under Effects.
 
           Documentation: https://github.com/${{ github.repository }}
           TXT
@@ -115,6 +129,7 @@ jobs:
           cmake -S . -B build-win -A x64 -DPLUS_BUILD_TESTS=ON
           cmake --build build-win --config Release --parallel
           ls -la build-win/*.dll build-win/*.exe
+          test -f build-win/TextPlusFill.dll
 
       # GitHub's Windows machines have no GPU: Mesa's llvmpipe provides OpenGL 4.5
       # in software when its opengl32.dll sits next to the test host.
@@ -147,14 +162,19 @@ jobs:
             "Text File=plugins/textplus/tests/data/lower_thirds.csv" "Slide=0.9" "L2 Style=1" "L2 Size=50" @expectInk=1 @print=Slide
           ./build-win/ffgl_test_host.exe build-win/TextPlus.dll smoke/ticker.png 1280 200 \
             "Display=3" "Text=Ticker on Windows" "Scroll Speed=300" "Plate=1" @dt=0.05 @frames=30 @expectInk=1
+          ./build-win/ffgl_test_host.exe build-win/TextPlus.dll smoke/extrude.png 1280 720 \
+            "Text=Text+ 2.0" "Font=Arial / Bold" "Size=220" "+Look=9" @frames=20 @expectInk=1
+          ./build-win/ffgl_test_host.exe build-win/TextPlusFill.dll smoke/fill_video.png 960 300 \
+            "Text=VIDEO" "Font=Arial / Bold" "Size=220" "Video=2" @input=photo @expectInk=1
           python plugins/textplus/tests/fuzz_params.py build-win/ffgl_test_host.exe build-win/TextPlus.dll 10
+          python plugins/textplus/tests/fuzz_params.py build-win/ffgl_test_host.exe build-win/TextPlusFill.dll 4
 
       - name: Package
         shell: bash
         run: |
           VERSION=$(sed -nE 's/^project\(ResolumePlus VERSION ([0-9.]+).*/\1/p' CMakeLists.txt)
           mkdir -p dist/TextPlus
-          cp build-win/TextPlus.dll dist/TextPlus/
+          cp build-win/TextPlus.dll build-win/TextPlusFill.dll dist/TextPlus/
           cp LICENSE THIRD_PARTY_NOTICES.md dist/TextPlus/
           cat > dist/TextPlus/INSTALL.txt <<TXT
           Text+ ${VERSION} for Resolume Arena / Avenue 7 on Windows (x64)
@@ -162,9 +182,12 @@ jobs:
           NOT YET TESTED IN RESOLUME ON WINDOWS. It builds and passes the automated
           tests (software OpenGL); please report problems in the GitHub issues.
 
-          1. Copy TextPlus.dll to Documents\Resolume Arena\Extra Effects
+          TextPlus.dll      the source "Text+"
+          TextPlusFill.dll  the effect "Text+ Fill" (text over, filled with or cut out of a clip)
+
+          1. Copy both DLLs to Documents\Resolume Arena\Extra Effects
              (or Resolume Avenue; see Preferences > Video > FFGL for your plugin folder).
-          2. Restart Resolume. Text+ is listed under Sources.
+          2. Restart Resolume. Text+ is listed under Sources, Text+ Fill under Effects.
 
           Requires the Microsoft Visual C++ 2015-2022 runtime (x64), which Resolume installs.
           Documentation: https://github.com/${{ github.repository }}

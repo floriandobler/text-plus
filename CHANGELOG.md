@@ -1,5 +1,46 @@
 # Changelog
 
+## 2.0.0
+
+**Interface**
+- 29 rows by default instead of 52. Outline, Shadow, Glow, 3D and Path start with one switch row (*Off* and the variants); their settings appear when they are switched on.
+- *Look* menu: Clean, Outline, Hollow, Sticker, Comic, Neon, LED Sign, Gradient Glow, Stripes, Lower Third, News Bar, Chrome 3D, Retro 3D. A look sets every style parameter and stays editable.
+- Animators show *Preset* and *Mode*; *+ Property* adds property rows, *Show All* / *Hide Unused* tidy up. Animators 2–4 appear one after another.
+- *Lines* group: leading and the line styles together; rarely used options moved to *Advanced* (Hide / Show).
+- Compositions from 1.x open with the matching settings: the new switch rows are derived from the old values. All 1.1 test scenes render pixel-identical.
+
+**3D**
+- *Tilt*: the finished picture as a plane in space (Tilt X / Y, Perspective).
+- *Extrude*: depth, rounded bevel, side colour, light angle and height, shading, gloss. Plates, shadow and glow lie on the front plane.
+
+**Look**
+- Fill patterns: stripes, halftone, checker, noise, LED dots, with scale, angle and offset.
+- Alternating fill colours per character, word or line.
+
+**Layout**
+- Text on a path: arc, ring around the anchor, wave; *Path Offset* loops seamlessly.
+- *Fit Each Line*: every line scaled to the box width.
+- OpenType features (`ss01, tnum, smcp`, …).
+
+**Content**
+- *Slides: Words*, *Slide Order: Shuffle* (fixed, repeatable order), *Replay: Out, then In*.
+- CSV row templates: `{Name} · {Role}` or `{1} · {2}`.
+- Placeholders in any text: `{weekday} {day} {month} {year}`, `{slide} {slides}`, `{bpm}`, `{osc:/address}`.
+- OSC receiver (UDP, *OSC Port* in *Advanced*): strings, numbers and bundles; instances on the same port share one socket.
+- Countdown to a date (`2026-12-31 23:59`); time format *Days* (`3d 04:12:09`).
+
+**Animation**
+- Four animators instead of two.
+- New properties: skew, blur, thickness, spacing, range (start / end).
+- New eases: Ease In, Ease In-Out, Bounce, Elastic. New orders: Left to Right, Top to Bottom (by position).
+- Presets: Bounce In, Elastic Pop, Skew In, Blur In, Tracking In, Weight Wave.
+
+**Text+ Fill**
+- The plugin as an FFGL effect: text over the clip, filled with it, or cut out of it.
+
+**Platform**
+- Both plugins in every package (`TextPlus` and `TextPlusFill`, macOS and Windows).
+
 ## 1.1.0
 
 **Content**
