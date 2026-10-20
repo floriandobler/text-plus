@@ -9,6 +9,18 @@
 #include "core/FontFace.h"
 #include "core/GlyphCache.h"
 #include "core/TextLayout.h"
+#include "core/Osc.h"
+#include "core/Path.h"
+#include "core/Placeholders.h"
+
+#include <chrono>
+#include <thread>
+#if !defined( _WIN32 )
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <unistd.h>
+#endif
 
 #include <cmath>
 #include <cstdio>
@@ -28,6 +40,8 @@ static int g_failures = 0;
 			std::printf( "\n" );                             \
 		}                                                    \
 	} while( 0 )
+
+static double& v_dummy( double& d ) { return d; }
 
 static bool r_lines_ok( const LayoutResult& r )
 {
@@ -489,6 +503,204 @@ int main( int argc, char** argv )
 			CHECK( r_lines_ok( fr ), "line boxes" );
 		}
 		std::printf( "ok   font fallback\n" );
+	}
+
+	// ---- 2.0 ----
+	// Animator: range, spacing, thickness, blur, skew, new eases and orders
+	{
+		LayoutParams ap;
+		ap.sizePx = 100;
+		ap.text   = "AB CD|EF";
+		LayoutResult r = layoutText( *face, ap );
+		auto run = [ & ]( AnimatorParams a ) {
+			std::vector< GlyphState > st;
+			initGlyphStates( r, st );
+			applyAnimator( r, a, st );
+			return st;
+		};
+		AnimatorParams a;
+		a.mode       = AnimMode::Constant;
+		a.progress   = 1.0f;
+		a.unit       = AnimUnit::Word;
+		a.offsetY    = 50;
+		a.rangeStart = 0.34f;// words: AB, CD, EF -> only CD
+		a.rangeEnd   = 0.66f;
+		auto st      = run( a );
+		CHECK( st[ 0 ].dy == 0 && st[ 2 ].dy == 50 && st[ 3 ].dy == 50 && st[ 4 ].dy == 0, "range: only the middle word (%g %g %g)", st[ 0 ].dy, st[ 2 ].dy, st[ 4 ].dy );
+		a.mode     = AnimMode::SequenceIn;
+		a.progress = 0.0f;
+		a.spread   = 0.0f;
+		st         = run( a );
+		CHECK( st[ 2 ].dy == 50 && st[ 0 ].dy == 0, "range: a sequence works on the selection only" );
+		a.progress = 1.0f;
+		st         = run( a );
+		CHECK( st[ 2 ].dy == 0, "range: the selected word arrives at progress 1" );
+
+		AnimatorParams sp;
+		sp.mode      = AnimMode::Constant;
+		sp.progress  = 1.0f;
+		sp.spacing   = 10.0f;
+		sp.thickness = 3.0f;
+		sp.blur      = 8.0f;
+		sp.skew      = 0.5f;
+		st           = run( sp );
+		// line 1 "AB CD": 4 characters, offsets -1.5 .. 1.5
+		CHECK( std::fabs( st[ 0 ].dx + 15.0f ) < 1e-3f && std::fabs( st[ 3 ].dx - 15.0f ) < 1e-3f, "spacing spreads from the line middle (%g, %g)", st[ 0 ].dx, st[ 3 ].dx );
+		CHECK( std::fabs( st[ 4 ].dx + 5.0f ) < 1e-3f, "spacing per line (%g)", st[ 4 ].dx );
+		CHECK( st[ 1 ].weight == 3.0f && st[ 1 ].blur == 8.0f && st[ 1 ].skew == 0.5f, "thickness, blur, skew" );
+
+		AnimatorParams o;
+		o.mode     = AnimMode::SequenceIn;
+		o.unit     = AnimUnit::Character;
+		o.order    = AnimOrder::TopToBottom;
+		o.spread   = 0.0f;
+		o.offsetY  = 10;
+		o.progress = 0.5f;// 2 lines: line 1 in, line 2 away
+		st         = run( o );
+		CHECK( st[ 0 ].dy == 0 && st[ 3 ].dy == 0 && st[ 4 ].dy == 10, "top to bottom: line by line" );
+		o.order    = AnimOrder::LeftToRight;
+		o.progress = 0.3f;
+		ap.align   = Align::Left;// columns line up
+		r          = layoutText( *face, ap );
+		st         = run( o );
+		CHECK( st[ 0 ].dy == 0 && st[ 4 ].dy == 0 && st[ 3 ].dy == 10, "left to right: first column of both lines together" );
+
+		AnimatorParams e;
+		e.mode   = AnimMode::SequenceIn;
+		e.spread = 1.0f;
+		e.offsetY = 100;
+		bool monotonic = true;
+		for( AnimEase ease : { AnimEase::EaseIn, AnimEase::EaseInOut, AnimEase::Bounce, AnimEase::Elastic } )
+		{
+			e.ease     = ease;
+			e.progress = 0.0f;
+			const float start = run( e )[ 0 ].dy;
+			e.progress = 1.0f;
+			const float end = run( e )[ 0 ].dy;
+			monotonic = monotonic && std::fabs( start - 100 ) < 1e-3f && std::fabs( end ) < 1e-3f;
+		}
+		CHECK( monotonic, "new eases start away and end at rest" );
+		std::printf( "ok   animator 2.0 (range, spacing, thickness, blur, skew, orders, eases)\n" );
+	}
+
+	// Fit each line: every line as wide as the box
+	{
+		LayoutParams fp;
+		fp.sizePx   = 100;
+		fp.text     = "Short|A much longer line";
+		fp.boxWidth = 800;
+		fp.fit      = FitMode::FitEachLine;
+		fp.align    = Align::Left;
+		LayoutResult fr = layoutText( *face, fp );
+		CHECK( fr.lines.size() == 2 && std::fabs( ( fr.lines[ 0 ].right - fr.lines[ 0 ].left ) - 800 ) < 2 && std::fabs( ( fr.lines[ 1 ].right - fr.lines[ 1 ].left ) - 800 ) < 2,
+			   "fit each line: %.1f / %.1f", fr.lines.empty() ? 0 : fr.lines[ 0 ].right - fr.lines[ 0 ].left, fr.lines.size() < 2 ? 0 : fr.lines[ 1 ].right - fr.lines[ 1 ].left );
+		CHECK( fr.glyphs.front().scale > fr.glyphs.back().scale, "the short line is scaled up more" );
+		std::printf( "ok   fit each line\n" );
+	}
+
+	// Path: arc through the anchor, ring around it, wave
+	{
+		PathParams pp;
+		pp.mode   = PathMode::Arc;
+		pp.radius = 500;
+		PathPlacement c = placeOnPath( pp, 0, 0, 40, 0, 0 );
+		CHECK( std::fabs( c.x + 20 ) < 1e-3f && std::fabs( c.y ) < 1e-3f && std::fabs( c.angle ) < 1e-6f, "arc: the middle stays (%g %g %g)", c.x, c.y, c.angle );
+		PathPlacement right = placeOnPath( pp, 300, 0, 40, 0, 0 );
+		CHECK( right.y > 0 && right.angle > 0, "arc R > 0: the ends go down (%g, %g)", right.y, right.angle );
+		pp.radius = -500;
+		CHECK( placeOnPath( pp, 300, 0, 40, 0, 0 ).y < 0, "arc R < 0: the ends go up" );
+		pp.mode   = PathMode::Circle;
+		pp.radius = 300;
+		PathPlacement top = placeOnPath( pp, 50, 0, 0, 0, 100 );
+		CHECK( std::fabs( top.x ) < 1e-2f && std::fabs( top.y + 300 ) < 1e-2f, "circle: the line's middle on top of the ring (%g %g)", top.x, top.y );
+		pp.offset = 0.25f;
+		PathPlacement q = placeOnPath( pp, 50, 0, 0, 0, 100 );
+		CHECK( std::fabs( q.x - 300 ) < 1e-2f && std::fabs( q.y ) < 1e-2f, "circle: offset 25 %% turns a quarter (%g %g)", q.x, q.y );
+		pp.mode       = PathMode::Wave;
+		pp.offset     = 0;
+		pp.waveHeight = 40;
+		pp.waveLength = 400;
+		PathPlacement w = placeOnPath( pp, 100, 0, 0, 0, 0 );
+		CHECK( std::fabs( w.y - 40 ) < 1e-2f && std::fabs( w.angle ) < 1e-3f, "wave: crest at a quarter wavelength (%g %g)", w.y, w.angle );
+		std::printf( "ok   path\n" );
+	}
+
+	// Placeholders, CSV templates, dates
+	{
+		PlaceholderContext ctx;
+		ctx.now.day = 24;
+		ctx.now.month = 12;
+		ctx.now.year = 2026;
+		ctx.now.weekday = 4;
+		ctx.now.secondsOfDay = 20 * 3600 + 5 * 60;
+		ctx.slide  = 2;
+		ctx.slides = 7;
+		ctx.bpm    = 128.4;
+		const std::string ex = expandPlaceholders( "{weekday} {date} {time} {slide}/{slides} {bpm} {{x} {#ff0000}r{/} {unknown}", ctx );
+		CHECK( ex == "Thursday 24.12.2026 20:05 2/7 128 {{x} {#ff0000}r{/} {unknown}", "placeholders -> %s", ex.c_str() );
+		CHECK( hasPlaceholders( "a {slide} b" ) && !hasPlaceholders( "{#fff}x{/}" ) && !hasPlaceholders( "{{slide}" ), "placeholder detection" );
+		CHECK( expandTimeTemplate( "Slide {slide}", "5:00", ctx.now ) == "Slide {slide}", "other placeholders count: the template is kept for the second pass" );
+
+		auto rows = parseCsv( "Name;Role;City\nAnna;Director;Berlin\n;;\nBen;Sound;\n" );
+		auto t    = csvSlides( rows, true, "{name} | {Role} ({3}) {missing}" );
+		CHECK( t.size() == 2 && t[ 0 ] == "Anna | Director (Berlin) {missing}" && t[ 1 ] == "Ben | Sound () {missing}", "csv template -> %s", t.empty() ? "" : t[ 0 ].c_str() );
+		CHECK( csvSlides( rows, true, "" ).size() == 2, "empty template = cells as lines" );
+
+		LocalTime now;
+		now.year  = 2026;
+		now.epoch = 0;
+		double ep = 0;
+		CHECK( parseDateTime( "2026-12-24 20:00", now, ep ) && parseDateTime( "24.12.2026 20:00", now, v_dummy( ep ) ) && !parseDateTime( "20:00", now, ep ), "date formats" );
+		double a = 0, b = 0;
+		parseDateTime( "2026-12-24 20:00", now, a );
+		parseDateTime( "24.12.2026 20:00:00", now, b );
+		CHECK( a == b && a > 0, "the same moment in both formats" );
+		double c1 = 0, c2 = 0;
+		parseDateTime( "2026-12-25", now, c1 );
+		parseDateTime( "2026-12-24", now, c2 );
+		CHECK( std::fabs( c1 - c2 - 86400.0 ) < 3601.0, "one day apart" );
+		CHECK( formatDuration( 3 * 86400 + 4 * 3600 + 12 * 60 + 9, TimeFormat::Auto, true ) == "3d 04:12:09", "days in auto format -> %s",
+			   formatDuration( 3 * 86400 + 4 * 3600 + 12 * 60 + 9, TimeFormat::Auto, true ).c_str() );
+		CHECK( formatDuration( 2.1 * 86400, TimeFormat::Days, true ) == "3" && formatDuration( 2.1 * 86400, TimeFormat::Days, false ) == "2", "days format" );
+		std::printf( "ok   placeholders, csv templates, dates\n" );
+	}
+
+	// OSC: parsing and a real UDP message on localhost
+	{
+		const uint8_t msg[] = { '/', 's', 'c', 'o', 'r', 'e', 0, 0, ',', 'i', 'f', 's', 0, 0, 0, 0, 0, 0, 0, 3, 0x40, 0x20, 0, 0, 'g', 'o', 'a', 'l', 0, 0, 0, 0 };
+		std::vector< std::pair< std::string, std::string > > out;
+		OscReceiver::parsePacket( msg, sizeof( msg ), out );
+		CHECK( out.size() == 1 && out[ 0 ].first == "/score" && out[ 0 ].second == "3 2.5 goal", "osc message -> %s", out.empty() ? "" : out[ 0 ].second.c_str() );
+		std::vector< uint8_t > bundle = { '#', 'b', 'u', 'n', 'd', 'l', 'e', 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, (uint8_t)sizeof( msg ) };
+		bundle.insert( bundle.end(), msg, msg + sizeof( msg ) );
+		out.clear();
+		OscReceiver::parsePacket( bundle.data(), bundle.size(), out );
+		CHECK( out.size() == 1 && out[ 0 ].first == "/score", "osc bundle" );
+		out.clear();
+		OscReceiver::parsePacket( msg, 13, out );// truncated: no crash, no value
+		CHECK( out.empty(), "truncated message ignored" );
+		CHECK( parseOscPort( " 7001 " ) == 7001 && parseOscPort( "" ) == 0 && parseOscPort( "70000" ) == 0 && parseOscPort( "x1" ) == 0, "port parsing" );
+#if !defined( _WIN32 )
+		const int port = 39871;
+		auto rx        = OscReceiver::forPort( port );
+		CHECK( rx && OscReceiver::forPort( port ) == rx, "one receiver per port" );
+		for( int i = 0; i < 50 && !rx->listening(); ++i )
+			std::this_thread::sleep_for( std::chrono::milliseconds( 20 ) );
+		int s = socket( AF_INET, SOCK_DGRAM, 0 );
+		sockaddr_in to{};
+		to.sin_family      = AF_INET;
+		to.sin_port        = htons( port );
+		to.sin_addr.s_addr = htonl( INADDR_LOOPBACK );
+		std::string got;
+		for( int i = 0; i < 50 && !rx->value( "/score", got ); ++i )
+		{
+			sendto( s, msg, sizeof( msg ), 0, (const sockaddr*)&to, sizeof( to ) );
+			std::this_thread::sleep_for( std::chrono::milliseconds( 20 ) );
+		}
+		close( s );
+		CHECK( got == "3 2.5 goal", "osc over udp -> '%s'", got.c_str() );
+#endif
+		std::printf( "ok   osc\n" );
 	}
 
 	std::printf( g_failures ? "\n%d FAILURES\n" : "\nALL TESTS PASSED\n", g_failures );

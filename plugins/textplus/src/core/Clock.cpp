@@ -1,4 +1,5 @@
 #include "Clock.h"
+#include "Placeholders.h"
 
 #include <cctype>
 #include <chrono>
@@ -39,7 +40,13 @@ std::string formatDuration( double seconds, TimeFormat format, bool roundUp )
 	switch( format )
 	{
 	case TimeFormat::Auto:
+		if( h >= 24 )// days: "3d 04:12:09"
+			return sign + std::to_string( h / 24 ) + "d " + two( h % 24 ) + ":" + two( m ) + ":" + two( sec );
 		return h > 0 ? sign + std::to_string( h ) + ":" + two( m ) + ":" + two( sec ) : sign + std::to_string( m ) + ":" + two( sec );
+	case TimeFormat::Days: {
+		const long days = (long)( roundUp && !negative ? std::ceil( s / 86400.0 - 1e-9 ) : std::floor( s / 86400.0 + 1e-9 ) );
+		return ( days == 0 ? std::string() : sign ) + std::to_string( days );
+	}
 	case TimeFormat::HHMMSS:
 		return sign + two( h ) + ":" + two( m ) + ":" + two( sec );
 	case TimeFormat::HHMM: {
@@ -77,6 +84,8 @@ std::string formatTimeOfDay( double secondsOfDay, TimeFormat format )
 	}
 	case TimeFormat::Seconds:
 		return std::to_string( total );
+	case TimeFormat::Days:
+		break;
 	}
 	return two( h ) + ":" + two( m );
 }
@@ -245,7 +254,91 @@ LocalTime localNow()
 	lt.year         = tm.tm_year + 1900;
 	lt.month        = tm.tm_mon + 1;
 	lt.day          = tm.tm_mday;
+	lt.weekday      = tm.tm_wday;
+	lt.epoch        = duration< double >( now.time_since_epoch() ).count();
 	return lt;
+}
+
+bool parseDateTime( const std::string& text, const LocalTime& now, double& epoch )
+{
+	// Numbers and the separators between them
+	std::vector< long > num;
+	std::vector< char > sep;
+	std::string cur;
+	for( size_t i = 0; i <= text.size(); ++i )
+	{
+		const char c = i < text.size() ? text[ i ] : ' ';
+		if( std::isdigit( (unsigned char)c ) )
+		{
+			cur.push_back( c );
+			continue;
+		}
+		if( !cur.empty() )
+		{
+			num.push_back( std::atol( cur.c_str() ) );
+			cur.clear();
+			sep.push_back( c );// the character right after the number
+		}
+	}
+	if( num.size() < 2 )
+		return false;
+	int year = now.year, month = 0, day = 0;
+	size_t timeAt = 0;
+	if( sep[ 0 ] == '-' && num.size() >= 3 )// 2026-12-24
+	{
+		year   = (int)num[ 0 ];
+		month  = (int)num[ 1 ];
+		day    = (int)num[ 2 ];
+		timeAt = 3;
+	}
+	else if( sep[ 0 ] == '.' && num.size() >= 2 )// 24.12.2026 or 24.12.
+	{
+		day   = (int)num[ 0 ];
+		month = (int)num[ 1 ];
+		if( num.size() >= 3 && sep[ 1 ] == '.' && num[ 2 ] >= 1000 )
+		{
+			year   = (int)num[ 2 ];
+			timeAt = 3;
+		}
+		else
+		{
+			year   = -1;// this year or the next
+			timeAt = 2;
+		}
+	}
+	else
+		return false;
+	if( month < 1 || month > 12 || day < 1 || day > 31 )
+		return false;
+	long hh = 0, mm = 0, ss = 0;
+	if( num.size() > timeAt )
+		hh = num[ timeAt ];
+	if( num.size() > timeAt + 1 )
+		mm = num[ timeAt + 1 ];
+	if( num.size() > timeAt + 2 )
+		ss = num[ timeAt + 2 ];
+	if( hh > 24 || mm > 59 || ss > 59 )
+		return false;
+	auto toEpoch = [ & ]( int y ) {
+		std::tm tm{};
+		tm.tm_year  = y - 1900;
+		tm.tm_mon   = month - 1;
+		tm.tm_mday  = day;
+		tm.tm_hour  = (int)hh;
+		tm.tm_min   = (int)mm;
+		tm.tm_sec   = (int)ss;
+		tm.tm_isdst = -1;
+		return (double)std::mktime( &tm );
+	};
+	if( year < 0 )
+	{
+		epoch = toEpoch( now.year );
+		if( epoch < now.epoch - 12.0 * 3600.0 )
+			epoch = toEpoch( now.year + 1 );
+	}
+	else
+		epoch = toEpoch( year );
+	return true;
 }
 
 double secondsUntil( double target, const LocalTime& now )
@@ -297,7 +390,9 @@ std::string expandTimeTemplate( const std::string& tmpl, const std::string& time
 		out.push_back( tmpl[ i ] );
 		++i;
 	}
-	return found ? out : timer;
+	// Without any placeholder the text is the timer alone; other live values
+	// ({osc:...}, {slide}) count as placeholders too.
+	return found || hasPlaceholders( tmpl ) ? out : timer;
 }
 
 }//namespace textplus

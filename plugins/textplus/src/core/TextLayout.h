@@ -47,7 +47,8 @@ enum class FitMode
 {
 	Off,
 	ShrinkToBox,
-	FitWidth
+	FitWidth,
+	FitEachLine// every line scaled to the box width (or to the widest line without a box)
 };
 
 // Style of a line position. Index 0 is the main style (line 1); index 1 is
@@ -88,6 +89,7 @@ struct LayoutParams
 	bool tabularNumbers    = false;// equal-width digits (clocks, counters) where the font has them
 	bool pipeIsNewline     = true;
 	bool markup            = true;// inline colours {#ff8800}...{/}
+	std::string features;          // OpenType features, e.g. "smcp, onum, ss01" (HarfBuzz syntax)
 	LineStyle lines[ kLineStyles ];// [0] is ignored: line 1 always uses the main style
 
 	bool operator==( const LayoutParams& o ) const
@@ -97,7 +99,8 @@ struct LayoutParams
 				return false;
 		return text == o.text && sizePx == o.sizePx && trackingPermille == o.trackingPermille && leadingPercent == o.leadingPercent &&
 			boxWidth == o.boxWidth && boxHeight == o.boxHeight && align == o.align && anchorH == o.anchorH && anchorV == o.anchorV &&
-			fit == o.fit && kerning == o.kerning && ligatures == o.ligatures && tabularNumbers == o.tabularNumbers && pipeIsNewline == o.pipeIsNewline && markup == o.markup;
+			fit == o.fit && kerning == o.kerning && ligatures == o.ligatures && tabularNumbers == o.tabularNumbers && pipeIsNewline == o.pipeIsNewline && markup == o.markup &&
+			features == o.features;
 	}
 	bool operator!=( const LayoutParams& o ) const { return !( *this == o ); }
 };

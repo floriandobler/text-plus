@@ -3,6 +3,8 @@
 #include "core/Csv.h"
 #include "core/FileUtil.h"
 #include "core/GlyphCache.h"
+#include "core/Osc.h"
+#include "core/Placeholders.h"
 #include "core/Utf8.h"
 
 #include <algorithm>
@@ -33,79 +35,36 @@ FFResult initialiseLibrary()
 	return FF_SUCCESS;
 }
 
+#if defined( TEXTPLUS_EFFECT )
+CFFGLPluginInfo PluginInfo( PluginFactory< TextSource >,// create method
+							"KTXF",                      // unique FFGL plugin ID
+							"Text+ Fill",                // name
+							2,                           // API major
+							1,                           // API minor
+							2,                           // plugin major
+							0,                           // plugin minor
+							FF_EFFECT,
+							"Text+ as an effect: text over the clip, text filled with the clip, or the clip with the text cut out",
+							"Text+ Fill " TEXTPLUS_VERSION,
+							0, nullptr, initialiseLibrary, nullptr );
+#else
 CFFGLPluginInfo PluginInfo( PluginFactory< TextSource >,// create method
 							"KTXT",                      // unique FFGL plugin ID
 							"Text+",                     // name (sorts next to Resolume's own Text sources)
 							2,                           // API major
 							1,                           // API minor
-							1,                           // plugin major
-							1,                           // plugin minor
+							2,                           // plugin major
+							0,                           // plugin minor
 							FF_SOURCE,
-							"Text source with distance-field outlines, plates, shadows, glow, clocks, tickers and per-character animation",
+							"Text source with distance-field outlines, plates, 3D, patterns, paths, live data and per-character animation",
 							"Text+ " TEXTPLUS_VERSION,
 							0, nullptr, initialiseLibrary, nullptr );
-
-const char* kGroupText     = "Text";
-const char* kGroupFont     = "Font";
-const char* kGroupLayout   = "Layout";
-const char* kGroupFill     = "Fill";
-const char* kGroupOutline  = "Outline";
-const char* kGroupPlate    = "Plate";
-const char* kGroupShadow   = "Shadow";
-const char* kGroupGlow     = "Glow";
-const char* kGroupAnim[ kNumAnimators ] = { "Animator 1", "Animator 2" };
-const char* kGroupLine[ kNumLineStyles ] = { "Line 2", "Line 3+" };
-const char* kGroupOptions  = "Options";
-
-// Preset menu: values are stable (scripts and saved compositions), the order is for reading.
-enum Preset
-{
-	PRESET_NONE           = 0,
-	PRESET_TYPEWRITER     = 1,
-	PRESET_FADE_IN        = 2,
-	PRESET_RISE_IN        = 3,
-	PRESET_DROP_IN        = 4,
-	PRESET_POP_IN         = 5,
-	PRESET_SPIN_IN        = 6,
-	PRESET_WORDS_SLIDE_IN = 7,
-	PRESET_FADE_OUT       = 8,
-	PRESET_WAVE           = 9,
-	PRESET_JITTER         = 10,
-	PRESET_COLOR_SWEEP    = 11,
-	PRESET_RESET          = 12,
-	PRESET_WIPE_IN        = 13,
-	PRESET_DECODE         = 14,
-	PRESET_LOWER_THIRD_IN = 15,
-	PRESET_LOWER_THIRD_OUT = 16,
-	PRESET_GLITCH         = 17,
-	PRESET_IN_OUT         = 18,
-};
-
-const std::vector< ffglkit::OptionItem > kPresetItems = {
-	{ "Load preset...", PRESET_NONE },
-	{ "Typewriter", PRESET_TYPEWRITER, true },
-	{ "Fade In", PRESET_FADE_IN },
-	{ "Rise In", PRESET_RISE_IN },
-	{ "Drop In", PRESET_DROP_IN },
-	{ "Pop In", PRESET_POP_IN },
-	{ "Spin In", PRESET_SPIN_IN },
-	{ "Words Slide In", PRESET_WORDS_SLIDE_IN },
-	{ "Wipe In", PRESET_WIPE_IN },
-	{ "Decode", PRESET_DECODE },
-	{ "Fade Out", PRESET_FADE_OUT },
-	{ "Fade In, Hold, Out", PRESET_IN_OUT },
-	{ "Lower Third In (both animators)", PRESET_LOWER_THIRD_IN, true },
-	{ "Lower Third Out (both animators)", PRESET_LOWER_THIRD_OUT },
-	{ "Wave", PRESET_WAVE, true },
-	{ "Jitter", PRESET_JITTER },
-	{ "Glitch", PRESET_GLITCH },
-	{ "Color Sweep", PRESET_COLOR_SWEEP },
-	{ "Reset", PRESET_RESET, true },
-};
+#endif
 
 // Splits the source text into slides.
 //  Lines:  every line (newline or "|" when "| = New Line" is on) is a slide.
 //  Blocks: "||" or an empty line separates slides; single breaks stay line breaks.
+//  Words:  every word is a slide.
 std::string trimCopy( const std::string& s )
 {
 	size_t a = s.find_first_not_of( " \t\r\n" );
@@ -118,13 +77,15 @@ std::string trimCopy( const std::string& s )
 std::vector< std::string > splitSlides( const std::string& src, int mode, bool pipeIsNewline )
 {
 	std::vector< std::string > out;
-	if( mode == DISPLAY_SLIDES_LINES )
+	if( mode == DISPLAY_SLIDES_LINES || mode == DISPLAY_SLIDES_WORDS )
 	{
+		const bool words = mode == DISPLAY_SLIDES_WORDS;
 		std::string cur;
 		for( size_t i = 0; i < src.size(); ++i )
 		{
 			char c       = src[ i ];
-			bool isBreak = c == '\n' || c == '\r' || ( c == '|' && pipeIsNewline ) || ( c == '\\' && i + 1 < src.size() && src[ i + 1 ] == 'n' );
+			bool isBreak = c == '\n' || c == '\r' || ( c == '|' && pipeIsNewline ) || ( c == '\\' && i + 1 < src.size() && src[ i + 1 ] == 'n' ) ||
+				( words && ( c == ' ' || c == '\t' ) );
 			if( isBreak )
 			{
 				if( c == '\\' || ( c == '\r' && i + 1 < src.size() && src[ i + 1 ] == '\n' ) )
@@ -204,6 +165,46 @@ double positiveFmod( double a, double n )
 	return r < 0.0 ? r + n : r;
 }
 
+Color toColor( const ffglkit::Rgba& c )
+{
+	return Color{ c.r, c.g, c.b, c.a };
+}
+
+bool isSequence( AnimMode m )
+{
+	return m == AnimMode::SequenceIn || m == AnimMode::SequenceOut || m == AnimMode::SequenceInOut;
+}
+
+uint32_t mix32( uint32_t x )
+{
+	x ^= x >> 16;
+	x *= 0x7feb352dU;
+	x ^= x >> 15;
+	x *= 0x846ca68bU;
+	x ^= x >> 16;
+	return x;
+}
+
+// A fixed shuffle of n slides, the same on every platform for the same texts.
+std::vector< int > shuffledOrder( const std::vector< std::string >& slides )
+{
+	uint32_t seed = 0x9E3779B9u;
+	for( const std::string& s : slides )
+		for( unsigned char c : s )
+			seed = mix32( seed ^ c ) + 0x632BE5ABu;
+	std::vector< int > order( slides.size() );
+	for( size_t i = 0; i < order.size(); ++i )
+		order[ i ] = (int)i;
+	for( size_t i = order.size(); i > 1; --i )
+	{
+		seed         = mix32( seed + (uint32_t)i );
+		const size_t j = seed % i;
+		std::swap( order[ i - 1 ], order[ j ] );
+	}
+	return order;
+}
+}//namespace
+
 // Slide position 0..1 -> slide index: n equal shares, 1.0 belongs to the last slide.
 int slideFromPosition( float position, int count )
 {
@@ -219,26 +220,21 @@ float slidePosition( int index, int count )
 	return count <= 1 ? 0.0f : ( (float)index + 0.5f ) / (float)count;
 }
 
-Color toColor( const ffglkit::Rgba& c )
-{
-	return Color{ c.r, c.g, c.b, c.a };
-}
-
-bool isSequence( AnimMode m )
-{
-	return m == AnimMode::SequenceIn || m == AnimMode::SequenceOut || m == AnimMode::SequenceInOut;
-}
-}//namespace
+#if defined( TEXTPLUS_EFFECT )
+bool TextSource::isEffect() { return true; }
+#else
+bool TextSource::isEffect() { return false; }
+#endif
 
 // ===========================================================================
-// Parameters
+// Construction, host time
 // ===========================================================================
 TextSource::TextSource() :
 	ParamPlugin( P_COUNT )
 {
 	m_isConnected = false;// left uninitialised by the SDK
-	SetMinInputs( 0 );
-	SetMaxInputs( 0 );
+	SetMinInputs( isEffect() ? 1 : 0 );
+	SetMaxInputs( isEffect() ? 1 : 0 );
 	defineParameters();
 	FontDatabase& db = FontDatabase::instance();
 	db.ensureScanning();
@@ -250,608 +246,6 @@ TextSource::TextSource() :
 }
 
 TextSource::~TextSource() = default;
-
-void TextSource::defineParameters()
-{
-	using ffglkit::OptionItem;
-
-	// ---- Text: where it comes from, how it is shown ----
-	defOption( P_SOURCE, "Source", kGroupText, std::vector< OptionItem >{ { "Input", SOURCE_INPUT }, { "File", SOURCE_FILE }, { "Clock & Timer", SOURCE_CLOCK } },
-			   SOURCE_INPUT );
-	defOption( P_DISPLAY, "Display", kGroupText,
-			   std::vector< OptionItem >{ { "Static", DISPLAY_STATIC },
-										  { "Slides: Lines", DISPLAY_SLIDES_LINES, true },
-										  { "Slides: Blocks (|| or empty line)", DISPLAY_SLIDES_BLOCKS },
-										  { "Ticker", DISPLAY_TICKER, true },
-										  { "Roll", DISPLAY_ROLL } },
-			   DISPLAY_STATIC );
-	text = "Text+";
-	defText( P_TEXT, "Text", kGroupText, text );
-	// Resolume's text fields are single-line: further lines get their own fields,
-	// revealed one by one with "+ Line" (hidden fields keep their saved values).
-	for( int i = 0; i < kExtraLines; ++i )
-		defText( P_LINE_FIRST + (unsigned)i, "Text " + std::to_string( i + 2 ), kGroupText, "" );
-	defEvent( P_ADD_LINE, "+ Line", kGroupText );
-	defEvent( P_REMOVE_LINE, "- Line", kGroupText );
-	defFile( P_TEXT_FILE, "Text File", kGroupText, { "txt", "text", "md", "csv", "tsv" } );
-	defBool( P_CSV_HEADER, "CSV: Skip First Row", kGroupText, true );
-
-	// Clock & Timer: the text fields are the template ("Doors open in {timer}")
-	defOption( P_TIMER_MODE, "Timer Mode", kGroupText,
-			   std::vector< OptionItem >{ { "Clock", TIMER_CLOCK },
-										  { "Countdown to Time", TIMER_COUNTDOWN_TO },
-										  { "Countdown", TIMER_COUNTDOWN },
-										  { "Stopwatch", TIMER_STOPWATCH },
-										  { "Counter", TIMER_COUNTER, true } },
-			   TIMER_CLOCK );
-	defText( P_TIMER_TARGET, "Target Time", kGroupText, timerTarget );
-	defText( P_TIMER_DURATION, "Duration", kGroupText, timerDuration );
-	defEvent( P_TIMER_START, "Start", kGroupText );
-	defEvent( P_TIMER_STOP, "Stop", kGroupText );
-	defEvent( P_TIMER_RESET, "Reset", kGroupText );
-	defBool( P_TIMER_AUTOSTART, "Start with Clip", kGroupText, true );
-	defOption( P_TIMER_FORMAT, "Time Format", kGroupText, { "Auto", "HH:MM:SS", "HH:MM", "MM:SS", "MM:SS.f", "Seconds" }, 0 );
-	defOption( P_TIMER_AT_ZERO, "At Zero", kGroupText, { "Hold 0", "Hide", "Count Up" }, 0 );
-	defRange( P_COUNT_FROM, "Count From", kGroupText, 0.0f, -1000000.0f, 1000000.0f );
-	defRange( P_COUNT_TO, "Count To", kGroupText, 1000.0f, -1000000.0f, 1000000.0f );
-	defRange( P_COUNT_PROGRESS, "Count", kGroupText, 1.0f, 0.0f, 1.0f );
-	defOption( P_COUNT_DECIMALS, "Decimals", kGroupText, { "0", "1", "2", "3" }, 0 );
-	defOption( P_NUMBER_FORMAT, "Number Format", kGroupText, { "1234.5", "1,234.5", "1.234,5", "1 234,5", "1'234.5" }, 1 );
-
-	// Slides: 0..1 split into equal shares, so BPM sync on the slider cycles through
-	// all slides and wraps back to the first, whatever the number of slides.
-	defRange( P_SLIDE, "Slide", kGroupText, 0.0f, 0.0f, 1.0f );
-	defEvent( P_NEXT_SLIDE, "Next Slide", kGroupText );
-	defEvent( P_PREV_SLIDE, "Previous Slide", kGroupText );
-	defRange( P_REPLAY, "Replay on Slide Change", kGroupText, 0.0f, 0.0f, 16.0f );
-	defRange( P_REPLAY_STAGGER, "Replay Stagger", kGroupText, 0.0f, 0.0f, 100.0f );
-
-	// Ticker / Roll
-	defRange( P_SCROLL_SPEED, "Scroll Speed", kGroupText, 150.0f, -2000.0f, 2000.0f );
-	defRange( P_SCROLL_POSITION, "Scroll Position", kGroupText, 0.0f, 0.0f, 1.0f );
-	defText( P_SEPARATOR, "Separator", kGroupText, separator );
-	defBool( P_ROLL_LOOP, "Roll Loop", kGroupText, true );
-	defRange( P_EDGE_FADE, "Edge Fade", kGroupText, 60.0f, 0.0f, 1000.0f );
-	// Text+ 1.0 had "Slides" (Off / Each Line / Blocks); kept hidden so old
-	// compositions open with the matching Display.
-	defOption( P_SLIDES_LEGACY, "Slides", kGroupText, { "Off", "Each Line", "Blocks" }, 0 );
-
-	// ---- Font: the menus first; "Font" is the stored, typeable name the menus write into ----
-	defOption( P_FAMILY, "Family", kGroupFont, std::vector< const char* >{ "(scanning fonts...)" }, 0 );
-	defOption( P_STYLE, "Style", kGroupFont, std::vector< const char* >{ "-" }, 0 );
-	defRange( P_SIZE, "Size", kGroupFont, 160.0f, 4.0f, 2000.0f );
-	defText( P_FONT, "Font", kGroupFont, "" );
-	defFile( P_FONT_FILE, "Font File", kGroupFont, { "ttf", "otf", "ttc", "otc" } );
-
-	// ---- Line styles: "Line 2" and "Line 3+" (every line from the third on) ----
-	for( int l = 0; l < kNumLineStyles; ++l )
-	{
-		const std::string pre = l == 0 ? "L2 " : "L3 ";
-		const char* g         = kGroupLine[ l ];
-		auto id               = [ & ]( LineParam p ) { return lineParam( l, p ); };
-		defOption( id( LP_MODE ), pre + "Style", g, std::vector< const char* >{ l == 0 ? "Same as Line 1" : "Same as Line 2", "Own" }, 0 );
-		defOption( id( LP_WEIGHT ), pre + "Weight", g, std::vector< const char* >{ "-" }, 0 );
-		defText( id( LP_FONT ), pre + "Font", g, "" );
-		defRange( id( LP_SIZE ), pre + "Size", g, 100.0f, 5.0f, 400.0f );
-		defColor( id( LP_COLOR_H ), pre + "Color", g, 0.0f, 0.0f, 1.0f, 0.0f );
-		defRange( id( LP_TRACKING ), pre + "Tracking", g, 0.0f, -300.0f, 1000.0f );
-		defRange( id( LP_SPACING ), pre + "Spacing", g, 0.0f, -100.0f, 200.0f );
-	}
-
-	// ---- Layout ----
-	defRange( P_POS_X, "Position X", kGroupLayout, 0.0f, -4000.0f, 4000.0f );
-	defRange( P_POS_Y, "Position Y", kGroupLayout, 0.0f, -4000.0f, 4000.0f );
-	defRange( P_ROTATION, "Rotation", kGroupLayout, 0.0f, -360.0f, 360.0f );
-	defOption( P_ALIGN, "Align", kGroupLayout, { "Left", "Center", "Right", "Justify" }, 1 );
-	defOption( P_CASE, "Case", kGroupLayout, { "Tt", "TT", "tt" }, 0 );
-	defOption( P_ANCHOR_H, "Anchor H", kGroupLayout, { "Auto", "Left", "Center", "Right" }, 0 );
-	defOption( P_ANCHOR_V, "Anchor V", kGroupLayout, { "Top", "Middle", "Bottom", "First Baseline", "Last Baseline" }, 1 );
-	defOption( P_WRAP, "Wrap", kGroupLayout, { "Off", "Box" }, 0 );
-	defRange( P_BOX_WIDTH, "Box Width", kGroupLayout, 1000.0f, 10.0f, 8000.0f );
-	defRange( P_BOX_HEIGHT, "Box Height", kGroupLayout, 0.0f, 0.0f, 8000.0f );
-	defOption( P_FIT, "Auto Fit", kGroupLayout, { "Off", "Shrink to Box", "Fit Box Width" }, 0 );
-	defRange( P_TRACKING, "Tracking", kGroupLayout, 0.0f, -300.0f, 1000.0f );
-	defRange( P_LEADING, "Leading", kGroupLayout, 120.0f, 50.0f, 300.0f );
-
-	// ---- Fill ----
-	defOption( P_FILL_MODE, "Fill Mode", kGroupFill, { "Solid", "Gradient (Block)", "Gradient (Characters)" }, 0 );
-	defColor( P_FILL_H, "Fill Color", kGroupFill, 0.0f, 0.0f, 1.0f, 1.0f );
-	defColor( P_FILL2_H, "Fill Color 2", kGroupFill, 0.58f, 0.7f, 1.0f, 1.0f );
-	defRange( P_GRAD_ANGLE, "Gradient Angle", kGroupFill, 0.0f, -180.0f, 180.0f );
-
-	// ---- Outline: band 1 and, outside it, band 2 ----
-	defRange( P_OL1_WIDTH, "Outline Width", kGroupOutline, 0.0f, 0.0f, 400.0f );
-	defOption( P_OL1_POSITION, "Outline Position", kGroupOutline, { "Outside", "Center", "Inside" }, 0 );
-	defOption( P_OL_CORNERS, "Outline Corners", kGroupOutline, { "Round", "Sharp" }, 0 );
-	defColor( P_OL1_H, "Outline Color", kGroupOutline, 0.0f, 0.0f, 0.0f, 1.0f );
-	defRange( P_OL2_WIDTH, "Outline 2 Width", kGroupOutline, 0.0f, 0.0f, 400.0f );
-	defColor( P_OL2_H, "Outline 2 Color", kGroupOutline, 0.0f, 0.0f, 1.0f, 1.0f );
-
-	// ---- Plate: areas behind the block or behind each line ----
-	defOption( P_PLATE, "Plate", kGroupPlate, { "Off", "Block", "Lines" }, PLATE_OFF );
-	defColor( P_PLATE_H, "Plate Color", kGroupPlate, 0.0f, 0.0f, 0.08f, 0.85f );
-	defRange( P_PLATE_PAD_X, "Plate Padding X", kGroupPlate, 35.0f, -50.0f, 300.0f );
-	defRange( P_PLATE_PAD_Y, "Plate Padding Y", kGroupPlate, 10.0f, -50.0f, 300.0f );
-	defRange( P_PLATE_RADIUS, "Plate Radius", kGroupPlate, 0.0f, 0.0f, 100.0f );
-	defRange( P_PLATE_SLANT, "Plate Slant", kGroupPlate, 0.0f, -45.0f, 45.0f );
-	defOption( P_PLATE_WIDTH, "Plate Width", kGroupPlate, { "Fit Text", "Equal", "Box" }, 0 );
-	defRange( P_PLATE_BORDER, "Plate Border", kGroupPlate, 0.0f, 0.0f, 200.0f );
-	defColor( P_PLATE_BORDER_H, "Plate Border Color", kGroupPlate, 0.0f, 0.0f, 1.0f, 1.0f );
-
-	// ---- Shadow (Distance 0 = hidden behind the text, so the default is "off" without a toggle) ----
-	defColor( P_SH_H, "Shadow Color", kGroupShadow, 0.0f, 0.0f, 0.0f, 0.6f );
-	defRange( P_SH_DISTANCE, "Shadow Distance", kGroupShadow, 0.0f, 0.0f, 400.0f );
-	defRange( P_SH_ANGLE, "Shadow Angle", kGroupShadow, -45.0f, -180.0f, 180.0f );
-	defRange( P_SH_SOFTNESS, "Shadow Softness", kGroupShadow, 8.0f, 0.0f, 200.0f );
-	defRange( P_SH_SPREAD, "Shadow Spread", kGroupShadow, 0.0f, 0.0f, 200.0f );
-	defRange( P_ISH_DISTANCE, "Inner Shadow Distance", kGroupShadow, 0.0f, 0.0f, 200.0f );
-	defRange( P_ISH_SOFTNESS, "Inner Shadow Softness", kGroupShadow, 6.0f, 0.0f, 200.0f );
-	defColor( P_ISH_H, "Inner Shadow Color", kGroupShadow, 0.0f, 0.0f, 0.0f, 0.6f );
-
-	// ---- Glow (Radius 0 = off) ----
-	defColor( P_GL_H, "Glow Color", kGroupGlow, 0.55f, 0.8f, 1.0f, 1.0f );
-	defRange( P_GL_RADIUS, "Glow Radius", kGroupGlow, 0.0f, 0.0f, 400.0f );
-	defRange( P_GL_STRENGTH, "Glow Strength", kGroupGlow, 1.0f, 0.0f, 2.0f );
-	defRange( P_IGL_RADIUS, "Inner Glow Radius", kGroupGlow, 0.0f, 0.0f, 200.0f );
-	defColor( P_IGL_H, "Inner Glow Color", kGroupGlow, 0.14f, 0.6f, 1.0f, 1.0f );
-
-	// ---- Animators. Resolume shows the internal names, so they carry the "A1 " prefix. ----
-	for( int a = 0; a < kNumAnimators; ++a )
-	{
-		const std::string pre = "A" + std::to_string( a + 1 ) + " ";
-		const char* g         = kGroupAnim[ a ];
-		auto id               = [ & ]( AnimParam p ) { return animParam( a, p ); };
-		defOption( id( AP_PRESET ), pre + "Preset", g, kPresetItems, PRESET_NONE );
-		defOption( id( AP_MODE ), pre + "Mode", g,
-				   std::vector< OptionItem >{ { "Off", (float)AnimMode::Off },
-											  { "Sequence In", (float)AnimMode::SequenceIn, true },
-											  { "Sequence Out", (float)AnimMode::SequenceOut },
-											  { "Sequence In/Out", (float)AnimMode::SequenceInOut },
-											  { "Wave", (float)AnimMode::Wave, true },
-											  { "Random", (float)AnimMode::Random },
-											  { "Constant", (float)AnimMode::Constant } },
-				   (float)AnimMode::Off );
-		defOption( id( AP_TARGET ), pre + "Target", g, { "Text", "Plate", "Text + Plate" }, 0 );
-		defOption( id( AP_UNIT ), pre + "Unit", g, { "Character", "Word", "Line" }, 0 );
-		defOption( id( AP_ORDER ), pre + "Order", g, { "Forward", "Reverse", "From Center", "From Edges", "Random" }, 0 );
-		defRange( id( AP_PROGRESS ), pre + "Progress", g, 1.0f, 0.0f, 1.0f );
-		defRange( id( AP_SPREAD ), pre + "Spread", g, 3.0f, 0.0f, 50.0f );
-		defRange( id( AP_HOLD ), pre + "Hold", g, 50.0f, 0.0f, 100.0f );
-		defOption( id( AP_EASE ), pre + "Ease", g, { "Linear", "Smooth", "Ease Out", "Overshoot" }, 1 );
-		defRange( id( AP_OFFSET_X ), pre + "Offset X", g, 0.0f, -2000.0f, 2000.0f );
-		defRange( id( AP_OFFSET_Y ), pre + "Offset Y", g, 0.0f, -2000.0f, 2000.0f );
-		defRange( id( AP_SCALE ), pre + "Scale", g, 100.0f, 0.0f, 400.0f );
-		defRange( id( AP_ROTATION ), pre + "Rotation", g, 0.0f, -720.0f, 720.0f );
-		defRange( id( AP_OPACITY ), pre + "Opacity", g, 100.0f, 0.0f, 100.0f );
-		defRange( id( AP_WIPE ), pre + "Wipe", g, 0.0f, 0.0f, 100.0f );
-		defOption( id( AP_WIPE_FROM ), pre + "Wipe From", g, { "Left", "Right", "Center", "Top", "Bottom" }, 0 );
-		defRange( id( AP_SCRAMBLE ), pre + "Scramble", g, 0.0f, 0.0f, 100.0f );
-		defOption( id( AP_CHARSET ), pre + "Characters", g, { "Letters", "Digits", "Symbols", "Binary", "Same as Text" }, 0 );
-		defColor( id( AP_COLOR_H ), pre + "Color", g, 0.0f, 0.8f, 1.0f, 0.0f );
-	}
-
-	// ---- Options: set once, rarely touched ----
-	defBool( P_PIPE_NEWLINE, "| = New Line", kGroupOptions, true );
-	defBool( P_MARKUP, "Color Tags", kGroupOptions, true );
-	defBool( P_KERNING, "Kerning", kGroupOptions, true );
-	defBool( P_LIGATURES, "Ligatures", kGroupOptions, true );
-	defRange( P_EDGE, "Edge Softness", kGroupOptions, 1.0f, 0.25f, 4.0f );
-
-	raiseVisibilityEvents = false;
-	updateVisibility();// part of the initial parameter info
-	raiseVisibilityEvents = true;
-}
-
-void TextSource::updateVisibility()
-{
-	// Rows appear only through explicit switches (menus, toggles), never through
-	// slider values, so the list never jumps under the mouse while dragging.
-	const int src       = source();
-	const int disp      = display();
-	const bool typed    = src == SOURCE_INPUT || src == SOURCE_CLOCK;// the clock uses the fields as template
-	const bool fromFile = src == SOURCE_FILE;
-	show( P_TEXT, typed );
-	for( int i = 0; i < kExtraLines; ++i )
-		show( P_LINE_FIRST + (unsigned)i, typed && i < shownLines );
-	show( P_ADD_LINE, typed && shownLines < kExtraLines );
-	show( P_REMOVE_LINE, typed && shownLines > 0 );
-	show( P_TEXT_FILE, fromFile );
-	show( P_CSV_HEADER, fromFile && csvActive );
-
-	const bool clock = src == SOURCE_CLOCK;
-	const int tm     = (int)values[ P_TIMER_MODE ];
-	const bool timed = tm == TIMER_COUNTDOWN || tm == TIMER_STOPWATCH;
-	show( P_TIMER_MODE, clock );
-	show( P_TIMER_TARGET, clock && tm == TIMER_COUNTDOWN_TO );
-	show( P_TIMER_DURATION, clock && tm == TIMER_COUNTDOWN );
-	show( P_TIMER_START, clock && timed );
-	show( P_TIMER_STOP, clock && timed );
-	show( P_TIMER_RESET, clock && timed );
-	show( P_TIMER_AUTOSTART, clock && timed );
-	show( P_TIMER_FORMAT, clock && tm != TIMER_COUNTER );
-	show( P_TIMER_AT_ZERO, clock && ( tm == TIMER_COUNTDOWN || tm == TIMER_COUNTDOWN_TO ) );
-	for( unsigned id : { P_COUNT_FROM, P_COUNT_TO, P_COUNT_PROGRESS, P_COUNT_DECIMALS, P_NUMBER_FORMAT } )
-		show( id, clock && tm == TIMER_COUNTER );
-
-	const bool slides = slidesOn();
-	const bool replay = slides && values[ P_REPLAY ] > 0.0f;
-	show( P_SLIDE, slides );
-	show( P_NEXT_SLIDE, slides );
-	show( P_PREV_SLIDE, slides );
-	show( P_REPLAY, slides );
-	show( P_REPLAY_STAGGER, slides );
-
-	const bool ticker = disp == DISPLAY_TICKER, roll = disp == DISPLAY_ROLL;
-	show( P_SCROLL_SPEED, ticker || roll );
-	show( P_SCROLL_POSITION, ticker || roll );
-	show( P_SEPARATOR, ticker );
-	show( P_ROLL_LOOP, roll );
-	show( P_EDGE_FADE, ticker || roll );
-	show( P_SLIDES_LEGACY, false );
-
-	const bool box = (int)values[ P_WRAP ] == 1;
-	show( P_BOX_WIDTH, box );
-	show( P_BOX_HEIGHT, box );
-	show( P_FIT, box );
-
-	for( int l = 0; l < kNumLineStyles; ++l )
-	{
-		const bool own = (int)values[ lineParam( l, LP_MODE ) ] == 1;
-		for( LineParam p : { LP_WEIGHT, LP_FONT, LP_SIZE, LP_COLOR_H, LP_TRACKING, LP_SPACING } )
-			show( lineParam( l, p ), own );
-	}
-
-	const int fillMode = (int)values[ P_FILL_MODE ];
-	show( P_FILL2_H, fillMode != 0 );
-	show( P_GRAD_ANGLE, fillMode == 1 );
-
-	const bool plate = (int)values[ P_PLATE ] != PLATE_OFF;
-	for( unsigned id : { P_PLATE_H, P_PLATE_PAD_X, P_PLATE_PAD_Y, P_PLATE_RADIUS, P_PLATE_SLANT, P_PLATE_WIDTH, P_PLATE_BORDER, P_PLATE_BORDER_H } )
-		show( id, plate );
-
-	for( int a = 0; a < kNumAnimators; ++a )
-	{
-		const auto mode  = (AnimMode)(int)values[ animParam( a, AP_MODE ) ];
-		const bool on    = mode != AnimMode::Off;
-		const bool seq   = isSequence( mode );
-		const bool waveR = mode == AnimMode::Wave || mode == AnimMode::Random;
-		show( animParam( a, AP_TARGET ), on && plate );
-		show( animParam( a, AP_UNIT ), on );
-		show( animParam( a, AP_ORDER ), seq || mode == AnimMode::Wave );
-		show( animParam( a, AP_PROGRESS ), on && !( seq && replay ) );// replay drives sequences itself
-		show( animParam( a, AP_SPREAD ), seq || waveR );
-		show( animParam( a, AP_HOLD ), mode == AnimMode::SequenceInOut );
-		show( animParam( a, AP_EASE ), seq );
-		for( AnimParam p : { AP_OFFSET_X, AP_OFFSET_Y, AP_SCALE, AP_ROTATION, AP_OPACITY, AP_WIPE, AP_WIPE_FROM, AP_SCRAMBLE, AP_CHARSET, AP_COLOR_H } )
-			show( animParam( a, p ), on );
-	}
-}
-
-FFResult TextSource::SetFloatParameter( unsigned int index, float value )
-{
-	if( index >= P_COUNT )
-		return FF_FAIL;
-
-	// Choices and positions the plugin also changes itself: only a value the host
-	// did not know before is a new user action. Hosts may re-send unchanged
-	// values at any time (e.g. while animating other parameters).
-	if( index == P_COUNT - 1 && !defaultsDone )
-	{
-		defaultsDone = true;// the last parameter of the SDK's default pass
-		values[ index ] = value;
-		hostKnown[ index ] = value;
-		return FF_SUCCESS;
-	}
-	const float previousHost = hostKnown[ index ];
-	const bool changed       = hostChanged( index, value );
-
-	if( index == P_FAMILY || index == P_STYLE )
-	{
-		// Before the menus are filled the stored index means nothing (the font list
-		// may have changed since the composition was saved); "Font" decides.
-		if( !menusPopulated || !changed )
-			return FF_SUCCESS;
-		values[ index ] = value;
-		if( live )
-			index == P_FAMILY ? onFamilyPicked( (int)value ) : onStylePicked( (int)value );
-		return FF_SUCCESS;
-	}
-	for( int l = 0; l < kNumLineStyles; ++l )
-		if( index == lineParam( l, LP_WEIGHT ) )
-		{
-			if( !menusPopulated || !changed )
-				return FF_SUCCESS;
-			values[ index ] = value;
-			if( live )
-				onWeightPicked( l, (int)value );
-			return FF_SUCCESS;
-		}
-	for( int a = 0; a < kNumAnimators; ++a )
-		if( index == animParam( a, AP_PRESET ) )
-		{
-			if( !changed )
-				return FF_SUCCESS;
-			values[ index ] = value;
-			if( live && (int)value > 0 )
-				applyPreset( a, (int)value );
-			return FF_SUCCESS;
-		}
-	switch( index )
-	{
-	case P_ADD_LINE:
-	case P_REMOVE_LINE:
-		if( pressed( index, value ) )
-		{
-			if( index == P_ADD_LINE )
-				showLines( shownLines + 1 );
-			else if( shownLines > 0 )
-			{
-				// The removed field is emptied, so it stays hidden after reloading.
-				extraLines[ shownLines - 1 ].clear();
-				RaiseParamEvent( P_LINE_FIRST + (unsigned)( shownLines - 1 ), FF_EVENT_FLAG_VALUE );
-				showLines( shownLines - 1 );
-			}
-		}
-		return FF_SUCCESS;
-	case P_NEXT_SLIDE:
-	case P_PREV_SLIDE:
-		if( pressed( index, value ) )
-			stepSlide( index == P_NEXT_SLIDE ? 1 : -1 );
-		return FF_SUCCESS;
-	case P_TIMER_START:
-		if( pressed( index, value ) )
-			timerStart();
-		return FF_SUCCESS;
-	case P_TIMER_STOP:
-		if( pressed( index, value ) )
-			timerStop();
-		return FF_SUCCESS;
-	case P_TIMER_RESET:
-		if( pressed( index, value ) )
-			timerReset();
-		return FF_SUCCESS;
-	case P_SLIDE: {
-		if( !changed )
-			return FF_SUCCESS;// keep a position set by the Next/Previous buttons
-		// Resolume's own - / + buttons next to the slider step by 0.01. A single,
-		// isolated step of about that size means "previous / next slide"; host
-		// animations and dragging send a stream of values and are taken as they are.
-		const double now    = wallSeconds();
-		const bool isolated = lastSlideHostChange < 0.0 || std::fabs( now - lastSlideHostChange ) > 0.3;
-		lastSlideHostChange = now;
-		const float delta   = value - previousHost;
-		if( isolated && std::isfinite( previousHost ) && std::fabs( delta ) > 0.004f && std::fabs( delta ) < 0.016f && slideCount > 1 )
-		{
-			values[ P_SLIDE ] = previousHost;
-			slideIndex        = slideFromPosition( previousHost, slideCount );
-			stepSlide( delta > 0.0f ? 1 : -1 );
-			return FF_SUCCESS;
-		}
-		break;
-	}
-	case P_SOURCE:
-		sourceFromHost = sourceFromHost || defaultsDone;
-		break;
-	case P_SLIDES_LEGACY:
-		// A composition from Text+ 1.0: "Slides" becomes the matching Display.
-		values[ index ] = value;
-		if( changed && (int)value > 0 && display() == DISPLAY_STATIC )
-		{
-			setValue( P_DISPLAY, (int)value == 1 ? (float)DISPLAY_SLIDES_LINES : (float)DISPLAY_SLIDES_BLOCKS );
-			updateVisibility();
-		}
-		return FF_SUCCESS;
-	default:
-		break;
-	}
-
-	values[ index ] = value;
-	updateVisibility();
-	return FF_SUCCESS;
-}
-
-FFResult TextSource::SetTextParameter( unsigned int index, const char* value )
-{
-	std::string v = value ? value : "";
-	for( int l = 0; l < kNumLineStyles; ++l )
-		if( index == lineParam( l, LP_FONT ) )
-		{
-			setLineFontText( l, v, false );
-			return FF_SUCCESS;
-		}
-	if( index >= P_LINE_FIRST && index <= P_LINE_LAST )
-	{
-		const int i     = (int)( index - P_LINE_FIRST );
-		extraLines[ i ] = v;
-		if( !v.empty() && i + 1 > shownLines )
-			showLines( i + 1 );// a saved composition brings its lines back
-		return FF_SUCCESS;
-	}
-	switch( index )
-	{
-	case P_TEXT:
-		text = v;
-		return FF_SUCCESS;
-	case P_FONT:
-		if( v != fontText )
-		{
-			fontText  = v;
-			fontDirty = true;
-		}
-		return FF_SUCCESS;
-	case P_FONT_FILE:
-		if( v != fontFile )
-		{
-			fontFile  = v;
-			fontDirty = true;
-		}
-		return FF_SUCCESS;
-	case P_TEXT_FILE:
-		if( v != textFile )
-		{
-			textFile            = v;
-			textFileStamp       = -1;
-			textFilePollCounter = 0;
-			textFileContent.clear();
-			// Text+ 1.0 compositions have no "Source": a file there means "show the file".
-			if( !v.empty() && !live && !sourceFromHost && source() == SOURCE_INPUT )
-			{
-				values[ P_SOURCE ] = (float)SOURCE_FILE;
-				RaiseParamEvent( P_SOURCE, FF_EVENT_FLAG_VALUE );
-				updateVisibility();
-			}
-		}
-		return FF_SUCCESS;
-	case P_TIMER_TARGET:
-		timerTarget = v;
-		return FF_SUCCESS;
-	case P_TIMER_DURATION:
-		timerDuration = v;
-		return FF_SUCCESS;
-	case P_SEPARATOR:
-		separator = v;
-		return FF_SUCCESS;
-	default:
-		return FF_FAIL;
-	}
-}
-
-char* TextSource::GetTextParameter( unsigned int index )
-{
-	if( index >= P_COUNT )
-		return nullptr;
-	if( index >= P_LINE_FIRST && index <= P_LINE_LAST )
-		return returnText( index, extraLines[ index - P_LINE_FIRST ] );
-	for( int l = 0; l < kNumLineStyles; ++l )
-		if( index == lineParam( l, LP_FONT ) )
-			return returnText( index, lineFonts[ l ].text );
-	switch( index )
-	{
-	case P_TEXT: return returnText( index, text );
-	case P_FONT: return returnText( index, fontText );
-	case P_FONT_FILE: return returnText( index, fontFile );
-	case P_TEXT_FILE: return returnText( index, textFile );
-	case P_TIMER_TARGET: return returnText( index, timerTarget );
-	case P_TIMER_DURATION: return returnText( index, timerDuration );
-	case P_SEPARATOR: return returnText( index, separator );
-	default: return returnText( index, "" );
-	}
-}
-
-char* TextSource::GetParameterDisplay( unsigned int index )
-{
-	if( index >= P_COUNT )
-		return nullptr;
-	char buf[ 96 ];
-	const float v = values[ index ];
-	auto isAnim   = [ & ]( AnimParam p ) {
-		for( int a = 0; a < kNumAnimators; ++a )
-			if( index == animParam( a, p ) )
-				return true;
-		return false;
-	};
-	auto isLine = [ & ]( LineParam p ) { return index == lineParam( 0, p ) || index == lineParam( 1, p ); };
-	if( ( index >= P_LINE_FIRST && index <= P_LINE_LAST ) || isLine( LP_FONT ) )
-		return GetTextParameter( index );
-	switch( index )
-	{
-	case P_TEXT:
-	case P_FONT:
-	case P_FONT_FILE:
-	case P_TEXT_FILE:
-	case P_TIMER_TARGET:
-	case P_TIMER_DURATION:
-	case P_SEPARATOR:
-		return GetTextParameter( index );
-	case P_SIZE:
-	case P_POS_X:
-	case P_POS_Y:
-	case P_BOX_WIDTH:
-	case P_BOX_HEIGHT:
-	case P_OL1_WIDTH:
-	case P_OL2_WIDTH:
-	case P_SH_DISTANCE:
-	case P_SH_SOFTNESS:
-	case P_SH_SPREAD:
-	case P_ISH_DISTANCE:
-	case P_ISH_SOFTNESS:
-	case P_GL_RADIUS:
-	case P_IGL_RADIUS:
-	case P_PLATE_BORDER:
-	case P_EDGE_FADE:
-		std::snprintf( buf, sizeof( buf ), "%.0f px", v );
-		break;
-	case P_SCROLL_SPEED:
-		std::snprintf( buf, sizeof( buf ), "%.0f px/s", v );
-		break;
-	case P_EDGE:
-		std::snprintf( buf, sizeof( buf ), "%.2f px", v );
-		break;
-	case P_ROTATION:
-	case P_SH_ANGLE:
-	case P_GRAD_ANGLE:
-	case P_PLATE_SLANT:
-		std::snprintf( buf, sizeof( buf ), "%.0f\xC2\xB0", v );
-		break;
-	case P_TRACKING:
-		std::snprintf( buf, sizeof( buf ), "%.0f /1000 em", v );
-		break;
-	case P_LEADING:
-	case P_PLATE_PAD_X:
-	case P_PLATE_PAD_Y:
-	case P_PLATE_RADIUS:
-	case P_REPLAY_STAGGER:
-		std::snprintf( buf, sizeof( buf ), "%.0f %%", v );
-		break;
-	case P_SCROLL_POSITION:
-	case P_COUNT_PROGRESS:
-		std::snprintf( buf, sizeof( buf ), "%.0f %%", v * 100.0f );
-		break;
-	case P_COUNT_FROM:
-	case P_COUNT_TO:
-		std::snprintf( buf, sizeof( buf ), "%s", formatNumber( v, (int)values[ P_COUNT_DECIMALS ], (NumberStyle)(int)values[ P_NUMBER_FORMAT ] ).c_str() );
-		break;
-	case P_SLIDE:
-		std::snprintf( buf, sizeof( buf ), "%d / %d", slideFromPosition( v, slideCount ) + 1, slideCount );
-		break;
-	case P_REPLAY:
-		if( v <= 0.0f )
-			std::snprintf( buf, sizeof( buf ), "Off" );
-		else
-			std::snprintf( buf, sizeof( buf ), "%.2g beats", v );
-		break;
-	default:
-		if( isLine( LP_SIZE ) || isLine( LP_SPACING ) )
-			std::snprintf( buf, sizeof( buf ), "%.0f %%", v );
-		else if( isLine( LP_TRACKING ) )
-			std::snprintf( buf, sizeof( buf ), "%+.0f /1000 em", v );
-		else if( isAnim( AP_PROGRESS ) )
-			std::snprintf( buf, sizeof( buf ), "%.0f %%", v * 100.0f );
-		else if( isAnim( AP_OFFSET_X ) || isAnim( AP_OFFSET_Y ) )
-			std::snprintf( buf, sizeof( buf ), "%.0f px", v );
-		else if( isAnim( AP_SCALE ) || isAnim( AP_OPACITY ) || isAnim( AP_WIPE ) || isAnim( AP_SCRAMBLE ) || isAnim( AP_HOLD ) )
-			std::snprintf( buf, sizeof( buf ), "%.0f %%", v );
-		else if( isAnim( AP_ROTATION ) )
-			std::snprintf( buf, sizeof( buf ), "%.0f\xC2\xB0", v );
-		else if( isAnim( AP_SPREAD ) )
-		{
-			const int a     = index == animParam( 0, AP_SPREAD ) ? 0 : 1;
-			const auto mode = (AnimMode)(int)values[ animParam( a, AP_MODE ) ];
-			if( mode == AnimMode::Random )
-				std::snprintf( buf, sizeof( buf ), "%d states", std::max( 2, (int)std::lround( v ) ) );
-			else if( mode == AnimMode::Wave )
-				std::snprintf( buf, sizeof( buf ), "%.1f units / wave", v );
-			else
-				std::snprintf( buf, sizeof( buf ), "%.1f units", v );
-		}
-		else
-		{
-			const char* d = CFFGLPlugin::GetParameterDisplay( index );
-			std::snprintf( buf, sizeof( buf ), "%s", d ? d : "" );
-		}
-	}
-	return returnDisplay( index, buf );
-}
 
 FFResult TextSource::SetTime( double time )
 {
@@ -871,6 +265,7 @@ void TextSource::SetBeatInfo( float bpm, float barPhase )
 	CFFGLPlugin::SetBeatInfo( bpm, barPhase );
 	if( bpm <= 0.0f )
 		return;
+	hostBpm = bpm;
 	if( lastBarPhase >= 0.0f && barPhase + 0.5f < lastBarPhase )
 		barCount += 1.0;// bar wrapped
 	lastBarPhase = barPhase;
@@ -1125,7 +520,7 @@ void TextSource::onWeightPicked( int l, int index )
 }
 
 // ===========================================================================
-// Text, slides
+// Text, slides, live values
 // ===========================================================================
 void TextSource::pollTextFile()
 {
@@ -1154,7 +549,7 @@ void TextSource::stepSlide( int delta )
 	if( !slidesOn() || slideCount < 1 )
 		return;
 	// Wraps around at both ends; the Slide slider shows the new position.
-	const int next = positiveMod( slideIndex + delta, slideCount );
+	const int next = positiveMod( slideTarget + delta, slideCount );
 	setValue( P_SLIDE, slidePosition( next, slideCount ) );
 }
 
@@ -1172,6 +567,19 @@ std::string TextSource::sourceText()
 	for( int i = 0; i < usedLines; ++i )
 		typed += "\n" + extraLines[ i ];
 	return typed;
+}
+
+std::string TextSource::expandLive( const std::string& t )
+{
+	if( t.find( '{' ) == std::string::npos )
+		return t;
+	PlaceholderContext ctx;
+	ctx.now    = localNow();
+	ctx.slide  = slideIndex + 1;
+	ctx.slides = slideCount;
+	ctx.bpm    = hostBpm > 0.0f ? hostBpm : 120.0f;
+	ctx.osc    = osc.get();
+	return expandPlaceholders( t, ctx );
 }
 
 std::string TextSource::currentText()
@@ -1192,25 +600,69 @@ std::string TextSource::currentText()
 	if( csv || slidesOn() )
 	{
 		const int mode        = display();
-		const std::string key = std::to_string( csv ? -1 : mode ) + ( values[ P_PIPE_NEWLINE ] > 0.5f ? "|" : "-" ) + ( values[ P_CSV_HEADER ] > 0.5f ? "h" : "-" ) + src;
+		const bool shuffle    = (int)values[ P_SLIDE_ORDER ] == 1;
+		const std::string key = std::to_string( csv ? -1 : mode ) + ( values[ P_PIPE_NEWLINE ] > 0.5f ? "|" : "-" ) + ( values[ P_CSV_HEADER ] > 0.5f ? "h" : "-" ) +
+			( shuffle ? "s" : "o" ) + ( csv ? rowTemplate : std::string() ) + "\x1f" + src;
 		if( key != lastSlidesSource )
 		{
-			slides           = csv ? csvSlides( parseCsv( src ), values[ P_CSV_HEADER ] > 0.5f ) : splitSlides( src, mode, values[ P_PIPE_NEWLINE ] > 0.5f );
+			slides = csv ? csvSlides( parseCsv( src ), values[ P_CSV_HEADER ] > 0.5f, rowTemplate ) : splitSlides( src, mode, values[ P_PIPE_NEWLINE ] > 0.5f );
+			if( csv && mode == DISPLAY_SLIDES_WORDS )
+			{
+				// Words of every row, one after another
+				std::vector< std::string > words;
+				for( const std::string& s : slides )
+					for( const std::string& w : splitSlides( s, DISPLAY_SLIDES_WORDS, true ) )
+						if( !w.empty() )
+							words.push_back( w );
+				slides = words;
+			}
 			lastSlidesSource = key;
 			if( slides.empty() )
 				slides.push_back( std::string() );
+			if( shuffle )
+				slideOrder = shuffledOrder( slides );
+			else
+			{
+				slideOrder.resize( slides.size() );
+				for( size_t i = 0; i < slideOrder.size(); ++i )
+					slideOrder[ i ] = (int)i;
+			}
 		}
 		if( slidesOn() )
 		{
-			slideCount = (int)slides.size();
-			slideIndex = slideFromPosition( values[ P_SLIDE ], slideCount );
-			shown      = slides[ slideIndex ];
+			slideCount  = (int)slides.size();
+			slideTarget = slideFromPosition( values[ P_SLIDE ], slideCount );
+			// "Out, then In": a new slide first lets the shown one play its animation
+			// backwards, then appears and plays in.
+			const bool outFirst = live && values[ P_REPLAY ] > 0.0f && (int)values[ P_REPLAY_MODE ] == 1 && lastSlideShown >= 0;
+			if( !outFirst || slideIndex >= slideCount )
+			{
+				slideIndex    = slideTarget;
+				slideOutPhase = false;
+			}
+			else if( slideTarget != slideIndex )
+			{
+				if( !slideOutPhase )
+				{
+					slideOutPhase     = true;
+					slideOutStartBeat = currentBeats();
+				}
+				else if( currentBeats() - slideOutStartBeat >= replayOutLength() )
+				{
+					slideOutPhase = false;
+					slideIndex    = slideTarget;
+				}
+			}
+			else
+				slideOutPhase = false;// back to the shown slide before it was gone
+			const int which = slideIndex < (int)slideOrder.size() ? slideOrder[ (size_t)slideIndex ] : slideIndex;
+			shown           = slides[ (size_t)std::clamp( which, 0, slideCount - 1 ) ];
 		}
 		else
 		{
 			// A CSV shown statically, as ticker or roll: all rows, a blank line between them
 			slideCount = 1;
-			slideIndex = 0;
+			slideIndex = slideTarget = 0;
 			for( size_t i = 0; i < slides.size(); ++i )
 				shown += ( i ? "\n\n" : "" ) + slides[ i ];
 		}
@@ -1218,7 +670,7 @@ std::string TextSource::currentText()
 	else
 	{
 		slideCount = 1;
-		slideIndex = 0;
+		slideIndex = slideTarget = 0;
 		shown      = src;
 	}
 
@@ -1228,6 +680,7 @@ std::string TextSource::currentText()
 		const std::string value = timerValueText( hide );
 		shown                   = hide ? std::string() : expandTimeTemplate( shown, value, localNow() );
 	}
+	shown = expandLive( shown );
 	return applyCase( shown, (TextCase)std::clamp( (int)values[ P_CASE ], 0, 2 ) );
 }
 
@@ -1264,7 +717,7 @@ void TextSource::timerReset()
 std::string TextSource::timerValueText( bool& hide )
 {
 	hide                    = false;
-	const auto format       = (TimeFormat)std::clamp( (int)values[ P_TIMER_FORMAT ], 0, 5 );
+	const auto format       = (TimeFormat)std::clamp( (int)values[ P_TIMER_FORMAT ], 0, 6 );
 	const int atZero        = (int)values[ P_TIMER_AT_ZERO ];
 	auto remaining          = [ & ]( double rem ) -> std::string {
 		if( rem <= 0.0 )
@@ -1285,10 +738,14 @@ std::string TextSource::timerValueText( bool& hide )
 	case TIMER_CLOCK:
 		return formatTimeOfDay( localNow().secondsOfDay, format );
 	case TIMER_COUNTDOWN_TO: {
+		const LocalTime now = localNow();
+		double epoch        = 0;
+		if( parseDateTime( timerTarget, now, epoch ) )// a date: days, hours, minutes
+			return remaining( epoch - now.epoch );
 		double target = 0;
 		if( !parseTimeOfDay( timerTarget, target ) )
 			return "--:--";
-		return remaining( secondsUntil( target, localNow() ) );
+		return remaining( secondsUntil( target, now ) );
 	}
 	case TIMER_COUNTDOWN: {
 		double duration = 0;
@@ -1321,122 +778,8 @@ void TextSource::onClipStart()
 }
 
 // ===========================================================================
-// Animation
+// Animation, layout, style, 3D, path
 // ===========================================================================
-void TextSource::applyPreset( int a, int preset )
-{
-	struct P
-	{
-		AnimMode mode;
-		AnimUnit unit;
-		AnimEase ease;
-		float spread, offX, offY, scale, rot, opacity, colorAlpha;
-		float wipe       = 0;
-		WipeFrom wipeFrom = WipeFrom::Left;
-		float scramble   = 0;
-		Charset charset  = Charset::Letters;
-		AnimTarget target = AnimTarget::Text;
-		float hold       = 50;
-	};
-	// Each preset describes the "away" state; Progress 0 -> 1 plays it in (or out).
-	// Offsets use the UI convention: Offset Y > 0 is up, like Position Y.
-	auto make = [ & ]( int id ) -> P {
-		switch( id )
-		{
-		case PRESET_TYPEWRITER: return P{ AnimMode::SequenceIn, AnimUnit::Character, AnimEase::Linear, 0, 0, 0, 100, 0, 0, 0 };
-		case PRESET_FADE_IN: return P{ AnimMode::SequenceIn, AnimUnit::Character, AnimEase::Smooth, 4, 0, 0, 100, 0, 0, 0 };
-		case PRESET_RISE_IN: return P{ AnimMode::SequenceIn, AnimUnit::Character, AnimEase::EaseOut, 4, 0, -120, 100, 0, 0, 0 };
-		case PRESET_DROP_IN: return P{ AnimMode::SequenceIn, AnimUnit::Character, AnimEase::Overshoot, 3, 0, 160, 100, 0, 0, 0 };
-		case PRESET_POP_IN: return P{ AnimMode::SequenceIn, AnimUnit::Character, AnimEase::Overshoot, 3, 0, 0, 0, 0, 0, 0 };
-		case PRESET_SPIN_IN: return P{ AnimMode::SequenceIn, AnimUnit::Character, AnimEase::EaseOut, 4, 0, 0, 0, 180, 0, 0 };
-		case PRESET_WORDS_SLIDE_IN: return P{ AnimMode::SequenceIn, AnimUnit::Word, AnimEase::EaseOut, 1.5f, -220, 0, 100, 0, 0, 0 };
-		case PRESET_WIPE_IN: {
-			P p{ AnimMode::SequenceIn, AnimUnit::Line, AnimEase::EaseOut, 1.5f, 0, 0, 100, 0, 100, 0 };
-			p.wipe = 100;
-			return p;
-		}
-		case PRESET_DECODE: {
-			P p{ AnimMode::SequenceIn, AnimUnit::Character, AnimEase::Linear, 8, 0, 0, 100, 0, 100, 0 };
-			p.scramble = 100;
-			return p;
-		}
-		case PRESET_FADE_OUT: return P{ AnimMode::SequenceOut, AnimUnit::Character, AnimEase::Smooth, 4, 0, 0, 100, 0, 0, 0 };
-		case PRESET_IN_OUT: {
-			P p{ AnimMode::SequenceInOut, AnimUnit::Character, AnimEase::Smooth, 4, 0, -40, 100, 0, 0, 0 };
-			p.hold = 60;
-			return p;
-		}
-		case PRESET_WAVE: return P{ AnimMode::Wave, AnimUnit::Character, AnimEase::Smooth, 8, 0, 30, 100, 0, 100, 0 };
-		case PRESET_JITTER: return P{ AnimMode::Random, AnimUnit::Character, AnimEase::Smooth, 8, 6, 6, 100, 8, 100, 0 };
-		case PRESET_GLITCH: {
-			P p{ AnimMode::Constant, AnimUnit::Character, AnimEase::Smooth, 3, 0, 0, 100, 0, 100, 0 };
-			p.scramble = 12;
-			p.charset  = Charset::Symbols;
-			return p;
-		}
-		case PRESET_COLOR_SWEEP: return P{ AnimMode::Wave, AnimUnit::Character, AnimEase::Smooth, 12, 0, 0, 100, 0, 100, 1 };
-		default: return P{ AnimMode::Off, AnimUnit::Character, AnimEase::Smooth, 3, 0, 0, 100, 0, 100, 0 };
-		}
-	};
-	auto write = [ & ]( int animator, const P& p ) {
-		auto id = [ & ]( AnimParam ap ) { return animParam( animator, ap ); };
-		setValue( id( AP_MODE ), (float)p.mode );
-		setValue( id( AP_TARGET ), (float)p.target );
-		setValue( id( AP_UNIT ), (float)p.unit );
-		setValue( id( AP_ORDER ), 0.0f );
-		setValue( id( AP_EASE ), (float)p.ease );
-		setValue( id( AP_SPREAD ), p.spread );
-		setValue( id( AP_HOLD ), p.hold );
-		setValue( id( AP_OFFSET_X ), p.offX );
-		setValue( id( AP_OFFSET_Y ), p.offY );
-		setValue( id( AP_SCALE ), p.scale );
-		setValue( id( AP_ROTATION ), p.rot );
-		setValue( id( AP_OPACITY ), p.opacity );
-		setValue( id( AP_WIPE ), p.wipe );
-		setValue( id( AP_WIPE_FROM ), (float)p.wipeFrom );
-		setValue( id( AP_SCRAMBLE ), p.scramble );
-		setValue( id( AP_CHARSET ), (float)p.charset );
-		setValue( id( AP_COLOR_A ), p.colorAlpha );
-		if( p.mode == AnimMode::Wave || p.mode == AnimMode::Random )
-			setValue( id( AP_PROGRESS ), 0.0f );// the phase; animate it (e.g. BPM sync) to make it move
-		else if( p.mode == AnimMode::Constant )
-			setValue( id( AP_PROGRESS ), 1.0f );
-		else if( p.mode == AnimMode::Off )
-			setValue( id( AP_PROGRESS ), 1.0f );
-	};
-
-	if( preset == PRESET_LOWER_THIRD_IN || preset == PRESET_LOWER_THIRD_OUT )
-	{
-		// Plate wipes open from the left, the text follows character by character
-		// (and on the way out: text first, then the plate). Sets both animators.
-		const bool in = preset == PRESET_LOWER_THIRD_IN;
-		P plateP{ in ? AnimMode::SequenceIn : AnimMode::SequenceOut, AnimUnit::Line, AnimEase::EaseOut, 1.5f, 0, 0, 100, 0, 100, 0 };
-		plateP.wipe   = 100;
-		plateP.target = AnimTarget::Plate;
-		P textP{ in ? AnimMode::SequenceIn : AnimMode::SequenceOut, AnimUnit::Character, AnimEase::EaseOut, 5, -30, 0, 100, 0, 0, 0 };
-		write( in ? 0 : 1, plateP );
-		write( in ? 1 : 0, textP );
-		if( (int)values[ P_PLATE ] == PLATE_OFF )
-			setValue( P_PLATE, (float)PLATE_LINES );
-		if( values[ P_REPLAY_STAGGER ] <= 0.0f )
-			setValue( P_REPLAY_STAGGER, 35.0f );
-		if( !in )
-			for( int k = 0; k < kNumAnimators; ++k )
-				setValue( animParam( k, AP_PROGRESS ), 0.0f );
-		for( int k = 0; k < kNumAnimators; ++k )
-			setValue( animParam( k, AP_PRESET ), 0.0f );
-		updateVisibility();
-		return;
-	}
-	if( preset <= PRESET_NONE || preset > PRESET_IN_OUT )
-		return;
-	write( a, make( preset ) );
-	// The menu is a one-shot loader: back to "Load preset..." so loading a
-	// composition never re-applies a preset over tweaked values.
-	setValue( animParam( a, AP_PRESET ), 0.0f );
-	updateVisibility();
-}
-
 AnimatorParams TextSource::animatorParams( int a ) const
 {
 	auto v = [ & ]( AnimParam p ) { return values[ animParam( a, p ) ]; };
@@ -1444,26 +787,44 @@ AnimatorParams TextSource::animatorParams( int a ) const
 	const int mode = (int)v( AP_MODE );
 	ap.mode        = mode >= 0 && mode <= (int)AnimMode::SequenceInOut ? (AnimMode)mode : AnimMode::Off;
 	ap.unit        = (AnimUnit)std::clamp( (int)v( AP_UNIT ), 0, 2 );
-	ap.order       = (AnimOrder)std::clamp( (int)v( AP_ORDER ), 0, 4 );
-	ap.ease        = (AnimEase)std::clamp( (int)v( AP_EASE ), 0, 3 );
+	ap.order       = (AnimOrder)std::clamp( (int)v( AP_ORDER ), 0, kNumOrders - 1 );
+	ap.ease        = (AnimEase)std::clamp( (int)v( AP_EASE ), 0, kNumEases - 1 );
 	ap.progress    = v( AP_PROGRESS );
 	if( isSequence( ap.mode ) && slidesOn() && values[ P_REPLAY ] > 0.0f )
 	{
-		// Played by the plugin on every slide change; Animator 2 may start later.
+		// Played by the plugin on every slide change; animator k starts k x Stagger later.
 		const double length = std::max( 0.05f, values[ P_REPLAY ] );
-		const double delay  = a == 1 ? length * std::clamp( values[ P_REPLAY_STAGGER ], 0.0f, 100.0f ) / 100.0 : 0.0;
-		ap.progress         = (float)std::clamp( ( currentBeats() - slideStartBeat - delay ) / length, 0.0, 1.0 );
+		const double step   = length * std::clamp( values[ P_REPLAY_STAGGER ], 0.0f, 100.0f ) / 100.0;
+		if( slideOutPhase )
+		{
+			// Backwards, the last animator first (text out, then the plate)
+			int last = 0;
+			for( int k = 0; k < kNumAnimators; ++k )
+				if( isSequence( (AnimMode)(int)values[ animParam( k, AP_MODE ) ] ) )
+					last = k;
+			const double delay = step * ( last - a );
+			ap.progress        = (float)( 1.0 - std::clamp( ( currentBeats() - slideOutStartBeat - delay ) / length, 0.0, 1.0 ) );
+		}
+		else
+			ap.progress = (float)std::clamp( ( currentBeats() - slideStartBeat - step * a ) / length, 0.0, 1.0 );
 	}
+	const float size = values[ P_SIZE ];
 	ap.spread      = v( AP_SPREAD );
 	ap.hold        = v( AP_HOLD ) / 100.0f;
+	ap.rangeStart  = v( AP_RANGE_START ) / 100.0f;
+	ap.rangeEnd    = v( AP_RANGE_END ) / 100.0f;
 	ap.offsetX     = v( AP_OFFSET_X );
 	ap.offsetY     = -v( AP_OFFSET_Y );// UI: Y up, like Position Y
 	ap.scale       = v( AP_SCALE ) / 100.0f;
 	ap.rotationDeg = v( AP_ROTATION );
+	ap.skew        = std::tan( std::clamp( v( AP_SKEW ), -80.0f, 80.0f ) * 3.14159265f / 180.0f );
+	ap.spacing     = v( AP_SPACING );
 	ap.opacity     = v( AP_OPACITY ) / 100.0f;
 	const ffglkit::Rgba c = ffglkit::hsbaToRgba( v( AP_COLOR_H ), v( AP_COLOR_S ), v( AP_COLOR_B ), 1.0f );
 	ap.color       = Rgb{ c.r, c.g, c.b };
 	ap.colorAmount = v( AP_COLOR_A );
+	ap.thickness   = v( AP_THICKNESS ) / 100.0f * size;
+	ap.blur        = std::max( 0.0f, v( AP_BLUR ) );
 	ap.wipe        = v( AP_WIPE ) / 100.0f;
 	ap.wipeFrom    = (WipeFrom)std::clamp( (int)v( AP_WIPE_FROM ), 0, 4 );
 	ap.scramble    = v( AP_SCRAMBLE ) / 100.0f;
@@ -1473,9 +834,16 @@ AnimatorParams TextSource::animatorParams( int a ) const
 	return ap;
 }
 
-// ===========================================================================
-// Frame
-// ===========================================================================
+double TextSource::replayOutLength() const
+{
+	const double length = std::max( 0.05f, values[ P_REPLAY ] );
+	int last            = 0;
+	for( int k = 0; k < kNumAnimators; ++k )
+		if( isSequence( (AnimMode)(int)values[ animParam( k, AP_MODE ) ] ) )
+			last = k;
+	return length + length * std::clamp( values[ P_REPLAY_STAGGER ], 0.0f, 100.0f ) / 100.0 * last;
+}
+
 LayoutParams TextSource::currentLayoutParams( const std::string& t ) const
 {
 	LayoutParams p;
@@ -1489,11 +857,11 @@ LayoutParams TextSource::currentLayoutParams( const std::string& t ) const
 	p.align            = (Align)std::clamp( (int)values[ P_ALIGN ], 0, 3 );
 	p.anchorH          = (AnchorH)std::clamp( (int)values[ P_ANCHOR_H ], 0, 3 );
 	p.anchorV          = (AnchorV)std::clamp( (int)values[ P_ANCHOR_V ], 0, 4 );
-	p.fit              = box ? (FitMode)std::clamp( (int)values[ P_FIT ], 0, 2 ) : FitMode::Off;
+	p.fit              = box ? (FitMode)std::clamp( (int)values[ P_FIT ], 0, 3 ) : FitMode::Off;
 	for( int l = 0; l < kNumLineStyles; ++l )
 	{
 		LineStyle& ls       = p.lines[ l + 1 ];
-		ls.own              = (int)values[ lineParam( l, LP_MODE ) ] == 1;
+		ls.own              = (int)values[ lineMode( l ) ] == 1;
 		ls.face             = lineFonts[ l ].face.get();
 		ls.sizePercent      = values[ lineParam( l, LP_SIZE ) ];
 		ls.trackingPermille = values[ lineParam( l, LP_TRACKING ) ];
@@ -1502,6 +870,7 @@ LayoutParams TextSource::currentLayoutParams( const std::string& t ) const
 	p.kerning   = values[ P_KERNING ] > 0.5f;
 	p.tabularNumbers = source() == SOURCE_CLOCK;// running digits must not make the text jitter
 	p.ligatures = values[ P_LIGATURES ] > 0.5f;
+	p.features  = features;
 	// With slides the pipe already separated the slides; inside a block it still breaks lines.
 	p.pipeIsNewline = values[ P_PIPE_NEWLINE ] > 0.5f;
 	p.markup        = values[ P_MARKUP ] > 0.5f;
@@ -1512,16 +881,33 @@ Style TextSource::currentStyle() const
 {
 	auto col = [ & ]( unsigned h ) { return toColor( colorOf( h ) ); };
 	Style s;
-	s.fill             = col( P_FILL_H );
-	s.fill2            = col( P_FILL2_H );
-	s.fillMode         = (sdfkit::FillMode)std::clamp( (int)values[ P_FILL_MODE ], 0, 2 );
-	s.gradientAngle    = values[ P_GRAD_ANGLE ] * 3.14159265f / 180.0f;
-	s.outline1Width    = values[ P_OL1_WIDTH ];
+	s.fill  = col( P_FILL_H );
+	s.fill2 = col( P_FILL2_H );
+	switch( (int)values[ P_FILL_MODE ] )
+	{
+	case FILL_GRADIENT_BLOCK: s.fillMode = sdfkit::FillMode::GradientBox; break;
+	case FILL_GRADIENT_CHARS: s.fillMode = sdfkit::FillMode::GradientChars; break;
+	case FILL_STRIPES: s.fillMode = sdfkit::FillMode::Stripes; break;
+	case FILL_HALFTONE: s.fillMode = sdfkit::FillMode::Halftone; break;
+	case FILL_CHECKER: s.fillMode = sdfkit::FillMode::Checker; break;
+	case FILL_NOISE: s.fillMode = sdfkit::FillMode::Noise; break;
+	case FILL_LED: s.fillMode = sdfkit::FillMode::Led; break;
+	default: s.fillMode = sdfkit::FillMode::Solid; break;// alternates are tints
+	}
+	s.gradientAngle = values[ P_GRAD_ANGLE ] * 3.14159265f / 180.0f;
+	s.patternScale  = std::max( 2.0f, values[ P_PATTERN_SCALE ] );
+	s.patternAngle  = values[ P_PATTERN_ANGLE ] * 3.14159265f / 180.0f;
+	s.patternOffset = values[ P_PATTERN_OFFSET ];
+
+	const int outline  = (int)values[ P_OUTLINE_MODE ];
+	s.outline1Width    = outline >= OUTLINE_ONE ? values[ P_OL1_WIDTH ] : 0.0f;
 	s.outline1Position = (sdfkit::OutlinePosition)std::clamp( (int)values[ P_OL1_POSITION ], 0, 2 );
 	s.sharpCorners     = (int)values[ P_OL_CORNERS ] == 1;
 	s.outline1         = col( P_OL1_H );
-	s.outline2Width    = values[ P_OL2_WIDTH ];
+	s.outline2Width    = outline == OUTLINE_TWO ? values[ P_OL2_WIDTH ] : 0.0f;
 	s.outline2         = col( P_OL2_H );
+
+	const int shadow   = (int)values[ P_SHADOW_MODE ];
 	s.shadow           = col( P_SH_H );
 	const float dist   = values[ P_SH_DISTANCE ];
 	const float ang    = values[ P_SH_ANGLE ] * 3.14159265f / 180.0f;
@@ -1529,27 +915,65 @@ Style TextSource::currentStyle() const
 	s.shadowDy         = -dist * std::sin( ang );// angle counter-clockwise, screen y down
 	s.shadowSoftness   = values[ P_SH_SOFTNESS ];
 	s.shadowSpread     = values[ P_SH_SPREAD ];
-	if( dist <= 0.0f && s.shadowSpread <= 0.0f )
-		s.shadow.a = 0.0f;// fully hidden behind the text: skip the work
+	if( !( shadow & EFFECT_OUTER ) || ( dist <= 0.0f && s.shadowSpread <= 0.0f ) )
+		s.shadow.a = 0.0f;// off, or fully hidden behind the text: skip the work
 	// Inner shadow: same light direction as the drop shadow
 	const float iDist     = values[ P_ISH_DISTANCE ];
 	s.innerShadow         = col( P_ISH_H );
 	s.innerShadowDx       = iDist * std::cos( ang );
 	s.innerShadowDy       = -iDist * std::sin( ang );
 	s.innerShadowSoftness = values[ P_ISH_SOFTNESS ];
-	if( iDist <= 0.0f )
-		s.innerShadow.a = 0.0f;// Distance 0 = off
+	if( !( shadow & EFFECT_INNER ) || iDist <= 0.0f )
+		s.innerShadow.a = 0.0f;
+
+	const int glow    = (int)values[ P_GLOW_MODE ];
 	s.glow            = col( P_GL_H );
-	s.glowRadius      = values[ P_GL_RADIUS ];
+	s.glowRadius      = glow & EFFECT_OUTER ? values[ P_GL_RADIUS ] : 0.0f;
 	s.glowStrength    = values[ P_GL_STRENGTH ];
 	s.innerGlow       = col( P_IGL_H );
-	s.innerGlowRadius = values[ P_IGL_RADIUS ];
-	s.plate           = col( P_PLATE_H );
+	s.innerGlowRadius = glow & EFFECT_INNER ? values[ P_IGL_RADIUS ] : 0.0f;
+
+	s.plate            = col( P_PLATE_H );
 	s.plateBorderWidth = values[ P_PLATE_BORDER ];
 	s.plateBorderColor = col( P_PLATE_BORDER_H );
 	s.plateMerge       = values[ P_PLATE_RADIUS ] / 100.0f * values[ P_SIZE ];// fillets as round as the corners
-	s.edgeSoftness    = values[ P_EDGE ];
+	s.edgeSoftness     = values[ P_EDGE ];
 	return s;
+}
+
+sdfkit::View3D TextSource::currentView() const
+{
+	sdfkit::View3D v;
+	const int mode = (int)values[ P_3D ];
+	v.mode         = mode == THREED_TILT ? sdfkit::View3D::Tilt : mode == THREED_EXTRUDE ? sdfkit::View3D::Extrude : sdfkit::View3D::Off;
+	const float d2r = 3.14159265f / 180.0f;
+	v.tiltX         = values[ P_TILT_X ] * d2r;
+	v.tiltY         = values[ P_TILT_Y ] * d2r;
+	// Perspective 0..100 % = field of view 0..90 degrees over the output height
+	const float fov = std::clamp( values[ P_PERSPECTIVE ], 0.0f, 100.0f ) * 0.9f * d2r;
+	v.focal         = fov > 0.01f ? 0.5f * (float)currentViewport.height / std::tan( 0.5f * fov ) : 0.0f;
+	v.depth         = std::max( 0.0f, values[ P_DEPTH ] );
+	v.bevel         = std::max( 0.0f, values[ P_BEVEL ] );
+	v.side          = toColor( colorOf( P_SIDE_H ) );
+	// Light: the angle it comes from (counter-clockwise, 0 = from the right) and its height
+	const float la  = values[ P_LIGHT_ANGLE ] * d2r, lh = std::clamp( values[ P_LIGHT_HEIGHT ], 0.0f, 90.0f ) * d2r;
+	v.lightX        = std::cos( lh ) * std::cos( la );
+	v.lightY        = -std::cos( lh ) * std::sin( la );
+	v.lightZ        = std::sin( lh );
+	v.shading       = values[ P_SHADING ] / 100.0f;
+	v.gloss         = values[ P_GLOSS ] / 100.0f;
+	return v;
+}
+
+PathParams TextSource::currentPath() const
+{
+	PathParams p;
+	p.mode       = (PathMode)std::clamp( (int)values[ P_PATH ], 0, 3 );
+	p.radius     = values[ P_PATH_RADIUS ];
+	p.offset     = values[ P_PATH_OFFSET ];
+	p.waveHeight = values[ P_WAVE_HEIGHT ];
+	p.waveLength = values[ P_WAVE_LENGTH ];
+	return p;
 }
 
 FFResult TextSource::InitGL( const FFGLViewportStruct* vp )
@@ -1570,6 +994,9 @@ FFResult TextSource::DeInitGL()
 	return FF_SUCCESS;
 }
 
+// ===========================================================================
+// Frame
+// ===========================================================================
 FFResult TextSource::ProcessOpenGL( ProcessOpenGLStruct* pGL )
 {
 	FontDatabase& db = FontDatabase::instance();
@@ -1584,6 +1011,25 @@ FFResult TextSource::ProcessOpenGL( ProcessOpenGLStruct* pGL )
 	for( int l = 0; l < kNumLineStyles; ++l )
 		if( lineFonts[ l ].dirty )
 			resolveLineFont( l );
+	if( !live )
+	{
+		// First frame: the host has sent the composition. 1.x compositions get their
+		// effect menus from their values; animators show the properties they use.
+		deriveModesFromValues();
+		for( int a = 0; a < kNumAnimators; ++a )
+			refreshShownProperties( a, true );
+	}
+
+	// Live data: one OSC receiver per port, shared by all instances
+	const int port = parseOscPort( oscPortText );
+	if( port != oscPort )
+	{
+		osc       = OscReceiver::forPort( port );
+		oscPort   = port;
+		oscWarned = false;
+		if( port > 0 )
+			FFGLLog::LogToHost( ( "Text+: listening for OSC on port " + std::to_string( port ) ).c_str() );
+	}
 
 	// Clip start (first frame, or the host time jumped back = re-triggered).
 	// Tickers and rolls move with the host's time when it sends one (a paused
@@ -1602,7 +1048,17 @@ FFResult TextSource::ProcessOpenGL( ProcessOpenGLStruct* pGL )
 	placed.clear();
 	sdfkit::BlockTransform transform;
 	sdfkit::Window window;
-	Style style = currentStyle();
+	Style style                = currentStyle();
+	const sdfkit::View3D view  = currentView();
+	sdfkit::VideoInput video;
+	if( isEffect() && pGL && pGL->numInputTextures > 0 && pGL->inputTextures && pGL->inputTextures[ 0 ] )
+	{
+		const FFGLTextureStruct& in = *pGL->inputTextures[ 0 ];
+		video.mode                  = (sdfkit::VideoInput::Mode)std::clamp( (int)values[ P_VIDEO ], 0, 3 );
+		video.texture               = in.Handle;
+		video.maxU                  = in.HardwareWidth > 0 ? (float)in.Width / (float)in.HardwareWidth : 1.0f;
+		video.maxV                  = in.HardwareHeight > 0 ? (float)in.Height / (float)in.HardwareHeight : 1.0f;
+	}
 
 	if( face )
 	{
@@ -1621,6 +1077,7 @@ FFResult TextSource::ProcessOpenGL( ProcessOpenGLStruct* pGL )
 
 		const int disp    = display();
 		const bool ticker = disp == DISPLAY_TICKER, roll = disp == DISPLAY_ROLL;
+		const PathParams path = ticker || roll ? PathParams() : currentPath();// tickers and rolls run straight
 		LayoutParams lp   = currentLayoutParams( shownText );
 		if( ticker )
 		{
@@ -1646,6 +1103,22 @@ FFResult TextSource::ProcessOpenGL( ProcessOpenGLStruct* pGL )
 		const float size  = layout.sizePx;
 		const float vpW   = (float)currentViewport.width, vpH = (float)currentViewport.height;
 		const bool boxOn  = (int)values[ P_WRAP ] == 1;
+
+		// Shapes that grow or soften (animated thickness and blur, the 3D raymarch)
+		// need a wider distance field around them.
+		{
+			float grow = std::max( 0.0f, values[ P_THICKNESS ] / 100.0f * size ), blur = 0.0f;
+			for( int a = 0; a < kNumAnimators; ++a )
+				if( animatorOn( a ) )
+				{
+					grow = std::max( grow, values[ P_THICKNESS ] / 100.0f * size + values[ animParam( a, AP_THICKNESS ) ] / 100.0f * size );
+					blur = std::max( blur, values[ animParam( a, AP_BLUR ) ] );
+				}
+			float march = 0.0f;
+			if( view.mode == sdfkit::View3D::Extrude )
+				march = std::clamp( 0.5f * view.depth, 4.0f, 0.1f * size );
+			style.extraReach = std::max( grow + 0.5f * blur, march );
+		}
 
 		// ---- Copies of the laid-out block (ticker repeats, roll loop) ----
 		std::vector< std::pair< float, float > > copies;
@@ -1738,7 +1211,8 @@ FFResult TextSource::ProcessOpenGL( ProcessOpenGLStruct* pGL )
 			items.insert( items.end(), copyItems.begin(), copyItems.end() );
 		}
 
-		// Per-glyph state: line colours, inline colours (win), character gradient, animators.
+		// Per-glyph state: line colours, inline colours (win), character gradient,
+		// alternating colours, animators.
 		glyphStates.assign( placed.size(), GlyphState{} );
 		Rgb lineColor[ kLineStyles ];
 		float lineColorAmount[ kLineStyles ] = { 0, 0, 0 };
@@ -1758,6 +1232,7 @@ FFResult TextSource::ProcessOpenGL( ProcessOpenGLStruct* pGL )
 				layerTint( glyphStates[ i ], layout.palette[ g.colorIndex ], 1.0f );
 		}
 		const float lastIdx = (float)std::max( 1, layout.numChars - 1 );
+		const int fillMenu  = (int)values[ P_FILL_MODE ];
 		if( style.fillMode == sdfkit::FillMode::GradientChars )
 			for( size_t i = 0; i < glyphStates.size(); ++i )
 				if( glyphStates[ i ].tintAmount <= 0.0f )// inline colours win
@@ -1767,14 +1242,23 @@ FFResult TextSource::ProcessOpenGL( ProcessOpenGLStruct* pGL )
 													 style.fill.b + ( style.fill2.b - style.fill.b ) * t },
 							   1.0f );
 				}
+		if( fillMenu >= FILL_ALT_CHARS && fillMenu <= FILL_ALT_LINES )
+			for( size_t i = 0; i < glyphStates.size(); ++i )
+				if( glyphStates[ i ].tintAmount <= 0.0f )
+				{
+					const LaidGlyph& g = placed[ i ];
+					const int unit     = fillMenu == FILL_ALT_CHARS ? g.charIndex : fillMenu == FILL_ALT_WORDS ? g.wordIndex : g.lineIndex;
+					if( unit & 1 )
+						layerTint( glyphStates[ i ], Rgb{ style.fill2.r, style.fill2.g, style.fill2.b }, 1.0f );
+				}
 
-		// ---- Plates ----
+		// ---- Plates (not on a path: they would not follow it) ----
 		struct PlateRect
 		{
 			float x0, y0, x1, y1;
 		};
 		std::vector< PlateRect > plateRects;
-		const int plateMode = (int)values[ P_PLATE ];
+		const int plateMode = path.on() ? PLATE_OFF : (int)values[ P_PLATE ];
 		if( plateMode != PLATE_OFF && !layout.lines.empty() )
 		{
 			const float padX  = values[ P_PLATE_PAD_X ] / 100.0f * size;
@@ -1835,6 +1319,8 @@ FFResult TextSource::ProcessOpenGL( ProcessOpenGLStruct* pGL )
 		const UnitCounts plateCounts{ (int)plateRects.size(), (int)plateRects.size(), (int)plateRects.size() };
 		for( int a = 0; a < kNumAnimators; ++a )
 		{
+			if( !animatorOn( a ) )
+				continue;
 			const AnimatorParams ap = animatorParams( a );
 			const auto target       = plateRects.empty() ? AnimTarget::Text : (AnimTarget)std::clamp( (int)values[ animParam( a, AP_TARGET ) ], 0, 2 );
 			if( target != AnimTarget::Plate )
@@ -1845,6 +1331,7 @@ FFResult TextSource::ProcessOpenGL( ProcessOpenGLStruct* pGL )
 			{
 				AnimatorParams pp = ap;
 				pp.scramble       = 0.0f;
+				pp.spacing        = 0.0f;
 				applyAnimator( plateItems, plateCounts, pp, plateStates );
 			}
 		}
@@ -1908,6 +1395,17 @@ FFResult TextSource::ProcessOpenGL( ProcessOpenGLStruct* pGL )
 			return (uint32_t)gid;
 		};
 
+		// Line extents for the circle path: the line plus one average glyph of gap
+		std::vector< float > lineLength( layout.lines.size(), 0.0f );
+		if( path.mode == PathMode::Circle )
+			for( size_t li = 0; li < layout.lines.size(); ++li )
+			{
+				const LineBox& lb = layout.lines[ li ];
+				const float len   = lb.penEnd - lb.left;
+				lineLength[ li ]  = len + ( lb.glyphCount > 0 ? len / (float)lb.glyphCount : 0.0f );
+			}
+		const float globalWeight = values[ P_THICKNESS ] / 100.0f * size;
+
 		instances.reserve( placed.size() );
 		for( size_t i = 0; i < placed.size(); ++i )
 		{
@@ -1960,6 +1458,25 @@ FFResult TextSource::ProcessOpenGL( ProcessOpenGLStruct* pGL )
 			// The field of this glyph reaches spreadEm * its size in px.
 			const SpreadLevel& L = spreadLevel( slot->level );
 			minReachPx           = std::min( minReachPx, L.spreadEm * size * std::max( 0.05f, glyphScale ) );
+
+			// Where it sits: on the layout, or on the path (animator offsets and turns
+			// then work in the glyph's turned frame)
+			float baseX = g.x, baseY = g.y, turn = 0.0f, dx = st.dx, dy = st.dy;
+			if( path.on() )
+			{
+				const LineBox* lb = g.lineIndex >= 0 && g.lineIndex < (int)layout.lines.size() ? &layout.lines[ (size_t)g.lineIndex ] : nullptr;
+				const PathPlacement pl = placeOnPath( path, g.x + 0.5f * g.advance, g.y, g.advance, lb ? lb->left : 0.0f,
+													  lb && (size_t)g.lineIndex < lineLength.size() ? lineLength[ (size_t)g.lineIndex ] : 0.0f,
+													  layout.lines.empty() ? 0.0f : layout.lines.front().baseline );
+				baseX = pl.x;
+				baseY = pl.y;
+				turn  = pl.angle;
+				const float ct = std::cos( turn ), sn = std::sin( turn );
+				dx    = ct * st.dx - sn * st.dy;
+				dy    = sn * st.dx + ct * st.dy;
+			}
+			const float rot = st.rotation + turn;
+			const float c = std::cos( rot ), s = std::sin( rot );
 			ShapeInstance inst;
 			inst.quadL         = slot->planeLeft;
 			inst.quadB         = slot->planeBottom;
@@ -1969,11 +1486,10 @@ FFResult TextSource::ProcessOpenGL( ProcessOpenGLStruct* pGL )
 			inst.v0            = slot->v0;
 			inst.u1            = slot->u1;
 			inst.v1            = slot->v1;
-			const float c = std::cos( st.rotation ), s = std::sin( st.rotation );
-			inst.x             = g.x + st.dx + shiftX * st.scale * c;
-			inst.y             = g.y + st.dy + shiftX * st.scale * s;
+			inst.x             = baseX + dx + shiftX * st.scale * c;
+			inst.y             = baseY + dy + shiftX * st.scale * s;
 			inst.scale         = glyphScale;
-			inst.rotation      = st.rotation;
+			inst.rotation      = rot;
 			inst.alpha         = st.alpha;
 			inst.index         = g.charIndex / lastIdx;
 			inst.pxPerAtlasPx  = size * glyphScale / L.emPx;
@@ -1989,6 +1505,9 @@ FFResult TextSource::ProcessOpenGL( ProcessOpenGLStruct* pGL )
 			inst.clipY0        = st.clipY0;
 			inst.clipX1        = st.clipX1;
 			inst.clipY1        = st.clipY1;
+			inst.skew          = st.skew;
+			inst.weightPx      = st.weight + globalWeight * g.scale;
+			inst.blurPx        = std::clamp( st.blur, 0.0f, 64.0f );
 			instances.push_back( inst );
 		}
 
@@ -2031,6 +1550,8 @@ FFResult TextSource::ProcessOpenGL( ProcessOpenGLStruct* pGL )
 			b.boxHalfH   = hh;
 			b.boxRadius  = radius;
 			b.boxSlant   = slant;
+			b.skew       = st.skew;
+			b.blurPx     = std::clamp( st.blur, 0.0f, 64.0f );
 			plates.push_back( b );
 		}
 
@@ -2069,7 +1590,7 @@ FFResult TextSource::ProcessOpenGL( ProcessOpenGLStruct* pGL )
 	transform.originY  = currentViewport.height * 0.5f - values[ P_POS_Y ];// Position Y up
 	transform.rotation = values[ P_ROTATION ] * 3.14159265f / 180.0f;
 
-	renderer.render( currentViewport, pGL->HostFBO, instances, plates, transform, style, window, atlas.texture(), atlas.size() );
+	renderer.render( currentViewport, pGL->HostFBO, instances, plates, transform, style, window, atlas.texture(), atlas.size(), view, video );
 
 	if( !live )
 	{

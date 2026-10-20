@@ -1,5 +1,8 @@
 #include "Csv.h"
 
+#include <cctype>
+#include <cstdlib>
+
 #include <algorithm>
 #include <cctype>
 #include <cstdint>
@@ -182,6 +185,76 @@ std::vector< std::string > csvSlides( const std::vector< std::vector< std::strin
 		}
 		if( !slide.empty() )
 			slides.push_back( slide );
+	}
+	if( slides.empty() )
+		slides.push_back( std::string() );
+	return slides;
+}
+
+std::vector< std::string > csvSlides( const std::vector< std::vector< std::string > >& rows, bool skipHeader, const std::string& tmpl )
+{
+	if( tmpl.find_first_not_of( " \t" ) == std::string::npos )
+		return csvSlides( rows, skipHeader );
+	auto lower = []( std::string s ) {
+		for( char& c : s )
+			c = (char)std::tolower( (unsigned char)c );
+		while( !s.empty() && ( s.back() == ' ' || s.back() == '\t' ) )
+			s.pop_back();
+		while( !s.empty() && ( s.front() == ' ' || s.front() == '\t' ) )
+			s.erase( s.begin() );
+		return s;
+	};
+	std::vector< std::string > header;
+	if( skipHeader && !rows.empty() )
+		for( const std::string& h : rows[ 0 ] )
+			header.push_back( lower( h ) );
+	std::vector< std::string > slides;
+	for( size_t r = skipHeader ? 1 : 0; r < rows.size(); ++r )
+	{
+		const std::vector< std::string >& row = rows[ r ];
+		bool any = false;
+		for( const std::string& c : row )
+			any = any || !isBlank( c );
+		if( !any )
+			continue;
+		std::string out;
+		for( size_t i = 0; i < tmpl.size(); )
+		{
+			if( tmpl.compare( i, 2, "{{" ) == 0 )
+			{
+				out += "{{";
+				i += 2;
+				continue;
+			}
+			if( tmpl[ i ] == '{' )
+			{
+				const size_t close = tmpl.find( '}', i + 1 );
+				if( close != std::string::npos )
+				{
+					const std::string key = lower( tmpl.substr( i + 1, close - i - 1 ) );
+					int col               = -1;
+					if( !key.empty() && key.find_first_not_of( "0123456789" ) == std::string::npos )
+						col = std::atoi( key.c_str() ) - 1;
+					else
+						for( size_t h = 0; h < header.size(); ++h )
+							if( header[ h ] == key )
+							{
+								col = (int)h;
+								break;
+							}
+					if( col >= 0 )
+					{
+						if( col < (int)row.size() )
+							out += row[ (size_t)col ];
+						i = close + 1;
+						continue;
+					}
+				}
+			}
+			out.push_back( tmpl[ i ] );
+			++i;
+		}
+		slides.push_back( out );
 	}
 	if( slides.empty() )
 		slides.push_back( std::string() );

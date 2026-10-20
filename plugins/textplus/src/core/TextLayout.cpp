@@ -57,6 +57,22 @@ std::vector< ShapedPara > shape( const FontFace& mainFace, const LayoutParams& p
 		addFeature( "clig=0" );
 		addFeature( "dlig=0" );
 	}
+	// User features: "smcp, onum ss01" (separated by commas or spaces)
+	{
+		std::string cur;
+		for( size_t i = 0; i <= p.features.size(); ++i )
+		{
+			const char c = i < p.features.size() ? p.features[ i ] : ',';
+			if( c == ',' || c == ' ' || c == ';' )
+			{
+				if( !cur.empty() )
+					addFeature( cur.c_str() );
+				cur.clear();
+			}
+			else
+				cur.push_back( c );
+		}
+	}
 
 	hb_buffer_t* buf = hb_buffer_create();
 	int paraIndex    = 0;
@@ -462,6 +478,24 @@ LayoutResult layoutShaped( const LayoutParams& p, const std::vector< ShapedPara 
 		if( widest <= 0 )
 			return place( p, paras, size, false );
 		return place( p, paras, size * p.boxWidth / widest, false );
+	}
+
+	case FitMode::FitEachLine: {
+		// One measurement per line at the main size: advances and tracking scale
+		// linearly, so each line's own factor makes it exactly as wide as the target.
+		const Pass natural = breakLines( paras, size, 0 );
+		const float target = p.boxWidth > 0 ? p.boxWidth : natural.maxWidth;
+		if( target <= 0 )
+			return place( p, paras, size, false );
+		std::vector< ShapedPara > scaled = paras;
+		for( const Line& l : natural.lines )
+			if( l.inkWidth > 0.0f && l.para >= 0 && l.para < (int)scaled.size() )
+			{
+				const float k = target / l.inkWidth;
+				scaled[ l.para ].scale *= k;
+				scaled[ l.para ].trackingEm *= k;
+			}
+		return place( p, scaled, size, false );
 	}
 
 	case FitMode::ShrinkToBox: {

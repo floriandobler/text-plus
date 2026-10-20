@@ -15,7 +15,8 @@ enum class TimeFormat
 	HHMM,        // 09:05
 	MMSS,        // 125:03 (minutes are not limited to 59)
 	MMSSTenths,  // 05:03.4
-	Seconds      // 303
+	Seconds,     // 303
+	Days         // 12 (whole days, countdowns round up)
 };
 
 enum class NumberStyle
@@ -44,7 +45,12 @@ struct LocalTime
 {
 	double secondsOfDay = 0;
 	int year = 2000, month = 1, day = 1;
+	int weekday  = 6;   // 0 = Sunday
+	double epoch = 0;   // seconds since 1970 (UTC)
 };
+// "2026-12-24 20:00", "24.12.2026 20:00", "24.12. 20:00" (this year, or next
+// year once it has passed) -> seconds since 1970. False if there is no date.
+bool parseDateTime( const std::string& text, const LocalTime& now, double& epoch );
 LocalTime localNow();
 // Seconds from now until the next `targetSecondsOfDay` (negative if it was up to
 // 12 hours ago, so a passed start time counts as "over", not as "tomorrow").

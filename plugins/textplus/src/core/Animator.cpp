@@ -28,6 +28,34 @@ float applyEase( AnimEase e, float t )
 		float u        = t - 1.0f;
 		return 1.0f + c3 * u * u * u + c1 * u * u;// "back out": passes 1, then settles
 	}
+	case AnimEase::EaseIn:
+		return t * t * t;
+	case AnimEase::EaseInOut:
+		return t < 0.5f ? 4.0f * t * t * t : 1.0f - std::pow( -2.0f * t + 2.0f, 3.0f ) * 0.5f;
+	case AnimEase::Bounce: {
+		// "bounce out": lands, bounces three times
+		const float n1 = 7.5625f, d1 = 2.75f;
+		if( t < 1.0f / d1 )
+			return n1 * t * t;
+		if( t < 2.0f / d1 )
+		{
+			t -= 1.5f / d1;
+			return n1 * t * t + 0.75f;
+		}
+		if( t < 2.5f / d1 )
+		{
+			t -= 2.25f / d1;
+			return n1 * t * t + 0.9375f;
+		}
+		t -= 2.625f / d1;
+		return n1 * t * t + 0.984375f;
+	}
+	case AnimEase::Elastic: {
+		if( t <= 0.0f || t >= 1.0f )
+			return t;
+		const float c4 = 6.2831853f / 3.0f;
+		return std::pow( 2.0f, -10.0f * t ) * std::sin( ( t * 10.0f - 0.75f ) * c4 ) + 1.0f;
+	}
 	}
 	return t;
 }
@@ -90,13 +118,34 @@ void unionBox( UnitBox& b, const UnitBox& c, bool first )
 }
 
 // Rank in which a unit starts moving (0 = first). FromCenter/FromEdges give
-// symmetric units the same rank, so they move together.
-std::vector< float > ranks( int n, AnimOrder order, unsigned seed )
+// symmetric units the same rank, so they move together. `centreX` / `line`
+// (per unit) serve the position based orders.
+std::vector< float > ranks( int n, AnimOrder order, unsigned seed, const std::vector< float >& centreX, const std::vector< float >& widthX,
+							const std::vector< int >& line )
 {
 	std::vector< float > r( (size_t)n );
 	const float c = ( n - 1 ) * 0.5f;
 	switch( order )
 	{
+	case AnimOrder::LeftToRight: {
+		// In unit widths from the leftmost unit, so Spread keeps its meaning
+		float lo = 1e30f, sumW = 0;
+		for( int i = 0; i < n; ++i )
+		{
+			lo = std::min( lo, centreX[ i ] );
+			sumW += widthX[ i ];
+		}
+		const float unit = std::max( 1e-3f, sumW / std::max( 1, n ) );
+		for( int i = 0; i < n; ++i )
+			r[ i ] = ( centreX[ i ] - lo ) / unit;
+		break;
+	}
+	case AnimOrder::TopToBottom: {
+		int first = line.empty() ? 0 : *std::min_element( line.begin(), line.end() );
+		for( int i = 0; i < n; ++i )
+			r[ i ] = (float)( line[ i ] - first );
+		break;
+	}
 	case AnimOrder::Forward:
 		for( int i = 0; i < n; ++i )
 			r[ i ] = (float)i;
@@ -188,6 +237,16 @@ std::vector< AnimItem > glyphItems( const std::vector< LaidGlyph >& glyphs, cons
 	{
 		runs( []( const AnimItem& a ) { return a.wordIndex; }, []( AnimItem& a ) -> UnitBox& { return a.wordBox; } );
 		runs( []( const AnimItem& a ) { return a.lineIndex; }, []( AnimItem& a ) -> UnitBox& { return a.lineBox; } );
+		// Position of each character relative to the middle of its line (spacing)
+		size_t start = 0;
+		for( size_t i = 1; i <= items.size(); ++i )
+			if( i == items.size() || items[ i ].lineIndex != items[ start ].lineIndex || items[ i ].charBox.x0 < items[ i - 1 ].charBox.x0 - 1e-3f )
+			{
+				const float mid = 0.5f * (float)( i - start - 1 );
+				for( size_t k = start; k < i; ++k )
+					items[ k ].lineOffset = (float)( k - start ) - mid;
+				start = i;
+			}
 	}
 	return items;
 }
@@ -233,8 +292,41 @@ void applyAnimator( const std::vector< AnimItem >& items, const UnitCounts& coun
 		return;
 	states.resize( items.size() );
 
-	const int n                   = unitCount( counts, p.unit );
-	const std::vector< float > rk = ranks( n, p.order, p.seed );
+	const int n = unitCount( counts, p.unit );
+	// Range: the units the animator works on (reading order), renumbered 0..m-1
+	std::vector< int > sel( (size_t)n, -1 );
+	int m = 0;
+	{
+		const float a = std::clamp( std::min( p.rangeStart, p.rangeEnd ), 0.0f, 1.0f ), b = std::clamp( std::max( p.rangeStart, p.rangeEnd ), 0.0f, 1.0f );
+		for( int u = 0; u < n; ++u )
+		{
+			const float c = ( u + 0.5f ) / (float)n;
+			if( c >= a && c <= b )
+				sel[ u ] = m++;
+		}
+	}
+	if( m == 0 )
+		return;
+	// Per selected unit: centre, width, line (position based orders)
+	std::vector< float > cx( (size_t)m, 0.0f ), wx( (size_t)m, 0.0f );
+	std::vector< int > ln( (size_t)m, 0 );
+	if( p.order == AnimOrder::LeftToRight || p.order == AnimOrder::TopToBottom )
+	{
+		std::vector< bool > seen( (size_t)m, false );
+		for( const AnimItem& it : items )
+		{
+			const int u = std::clamp( unitOf( it, p.unit ), 0, n - 1 );
+			const int k = sel[ u ];
+			if( k < 0 || seen[ k ] )
+				continue;
+			seen[ k ]      = true;
+			const UnitBox& b = boxOf( it, p.unit );
+			cx[ k ]        = 0.5f * ( b.x0 + b.x1 );
+			wx[ k ]        = b.x1 - b.x0;
+			ln[ k ]        = it.lineIndex;
+		}
+	}
+	const std::vector< float > rk = ranks( m, p.order, p.seed, cx, wx, ln );
 	const float maxRank           = *std::max_element( rk.begin(), rk.end() );
 	const float progress          = std::clamp( p.progress, 0.0f, 1.0f );
 	const float rotRad            = p.rotationDeg * 3.14159265f / 180.0f;
@@ -243,7 +335,10 @@ void applyAnimator( const std::vector< AnimItem >& items, const UnitCounts& coun
 
 	for( size_t i = 0; i < items.size(); ++i )
 	{
-		const int u    = std::clamp( unitOf( items[ i ], p.unit ), 0, n - 1 );
+		const int uAll = std::clamp( unitOf( items[ i ], p.unit ), 0, n - 1 );
+		const int u    = sel[ uAll ];
+		if( u < 0 )
+			continue;// outside the range
 		const float r  = rk[ u ];
 		float signedA  = 0;// drives offsets and rotation
 		float unsignedA = 0;// drives scale, opacity, colour, wipe, scramble
@@ -295,7 +390,10 @@ void applyAnimator( const std::vector< AnimItem >& items, const UnitCounts& coun
 		}
 
 		GlyphState& s = states[ i ];
-		s.dx += p.offsetX * signedA;
+		s.dx += p.offsetX * signedA + p.spacing * items[ i ].lineOffset * unsignedA;
+		s.skew += p.skew * signedA;
+		s.weight += p.thickness * unsignedA;
+		s.blur += p.blur * unsignedA;
 		s.dy += p.offsetY * signedA;
 		s.rotation += rotRad * signedA;
 		s.scale *= std::max( 0.0f, 1.0f + ( p.scale - 1.0f ) * unsignedA );
@@ -358,8 +456,11 @@ float maxAnimatedScale( const AnimatorParams& p )
 	if( p.mode == AnimMode::Off )
 		return 1.0f;
 	float s = std::max( 1.0f, p.scale );
-	if( p.ease == AnimEase::Overshoot && ( p.mode == AnimMode::SequenceIn || p.mode == AnimMode::SequenceOut || p.mode == AnimMode::SequenceInOut ) )
+	const bool seq = p.mode == AnimMode::SequenceIn || p.mode == AnimMode::SequenceOut || p.mode == AnimMode::SequenceInOut;
+	if( p.ease == AnimEase::Overshoot && seq )
 		s = std::max( s, 1.0f + std::fabs( p.scale - 1.0f ) * 0.1f );// back-out passes the target by ~10 %
+	if( p.ease == AnimEase::Elastic && seq )
+		s = std::max( s, 1.0f + std::fabs( p.scale - 1.0f ) * 0.4f );// elastic swings past the target
 	return s;
 }
 

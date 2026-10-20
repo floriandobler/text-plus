@@ -115,6 +115,12 @@ void ParamPlugin::setValue( unsigned id, float v )
 	RaiseParamEvent( id, FF_EVENT_FLAG_VALUE );
 }
 
+float ParamPlugin::defaultValue( unsigned id )
+{
+	ParamInfo* info = FindParamInfo( id );
+	return info ? info->defaultFloatVal : 0.0f;
+}
+
 Rgba ParamPlugin::colorOf( unsigned h ) const
 {
 	return hsbaToRgba( values[ h ], values[ h + 1 ], values[ h + 2 ], values[ h + 3 ] );

@@ -21,12 +21,15 @@ for line in subprocess.run([host, plugin, '--list'], capture_output=True, text=T
 
 texts = ['', ' ', 'A', 'Hello World', 'Ünïcödé Größe ß', 'emoji 😀 and 中文 missing', 'a|b|c|d|e|f',
          'x' * 600, 'Tab\there', '{#ff0000}red{/} {{literal', 'Line one||Block two||Three', 'W' * 40 + '|' + 'i' * 80]
-skip = {'Text File', 'Font File', 'Text', 'Font', 'L2 Font', 'L3 Font', 'Target Time', 'Duration', 'Separator'}
+skip = {'Text File', 'Font File', 'Text', 'Font', 'L2 Font', 'L3 Font', 'Target Time', 'Duration', 'Separator', 'Row Template',
+        'OpenType Features', 'OSC Port'}
 failures = 0
 out = tempfile.mkdtemp()
 for r in range(runs):
     args = [host, plugin, os.path.join(out, 'f.png'), str(random.choice([320, 640, 1280])), str(random.choice([180, 360, 720])),
             'Text=' + random.choice(texts), '@frames=12', '@dt=0.016']
+    if 'Fill' in os.path.basename(plugin):
+        args.append('@input=photo')
     if random.random() < 0.5:
         args.append('Font=' + random.choice(['Inter / Bold', 'DejaVu Sans / Book', 'Cantarell / Regular', 'nonexistent font', '']))
     for name, typ, lo, hi in random.sample(params, k=min(len(params), random.randint(5, 40))):
@@ -45,6 +48,8 @@ for r in range(runs):
                        ('Separator', ['', ' • ', '|', '   +++   '])):
         if random.random() < 0.3:
             args.append(k + '=' + random.choice(choices))
+    if random.random() < 0.2:
+        args.append('OpenType Features=' + random.choice(['smcp', 'onum, ss01', 'liga=0 kern=0', 'garbage!!', '']))
     for k in ('L2 Font', 'L3 Font'):
         if random.random() < 0.3:
             args.append(k + '=' + random.choice(['Bold', 'Light Italic', 'DejaVu Sans / Bold', 'x', '']))

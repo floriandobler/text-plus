@@ -25,6 +25,8 @@
 //  - Order changes which unit goes first (forward, reverse, centre, edges, random).
 //  - Wipe hides a unit behind a moving edge (from left, right, centre, top or
 //    bottom of the unit) while it is away; Scramble shows random characters.
+//  - Range limits the animator to a part of the text (from..to in reading
+//    order); a sequence then travels across that part only.
 // Several animators stack: offsets and rotations add, scale and opacity
 // multiply, colours layer.
 
@@ -80,15 +82,23 @@ enum class AnimOrder
 	Reverse,
 	FromCenter,
 	FromEdges,
-	Random
+	Random,
+	LeftToRight,// by position: units at the same x in different lines move together
+	TopToBottom // line by line, whatever the unit
 };
 enum class AnimEase
 {
 	Linear,
 	Smooth,
 	EaseOut,
-	Overshoot
+	Overshoot,
+	EaseIn,
+	EaseInOut,
+	Bounce,
+	Elastic
 };
+constexpr int kNumOrders = 7;
+constexpr int kNumEases  = 8;
 
 struct AnimatorParams
 {
@@ -105,6 +115,11 @@ struct AnimatorParams
 	float opacity     = 1.0f;      // 0..1
 	float colorAmount = 0.0f;      // 0..1
 	Rgb color;
+	float skew     = 0.0f;         // tan of the lean angle when away
+	float spacing  = 0.0f;         // px added between characters when away (tracking)
+	float thickness = 0.0f;        // px the shape grows (> 0) or thins when away
+	float blur     = 0.0f;         // px of edge softness when away
+	float rangeStart = 0.0f, rangeEnd = 1.0f;// share of the units (reading order) the animator works on
 	float wipe     = 0.0f;         // 0..1: share of the unit hidden when away
 	WipeFrom wipeFrom = WipeFrom::Left;
 	float scramble = 0.0f;         // 0..1: chance of a random character when away
@@ -125,6 +140,7 @@ struct AnimItem
 {
 	int charIndex = 0, wordIndex = 0, lineIndex = 0;
 	UnitBox charBox, wordBox, lineBox;
+	float lineOffset = 0;// characters from the middle of its line (spacing)
 };
 struct UnitCounts
 {
@@ -143,6 +159,9 @@ struct GlyphState
 	float clipX0 = -1e9f, clipY0 = -1e9f, clipX1 = 1e9f, clipY1 = 1e9f;
 	uint32_t scramble = 0;// != 0: show a random character, this is its seed
 	Charset charset   = Charset::Letters;
+	float skew   = 0;// tan
+	float weight = 0;// px
+	float blur   = 0;// px
 };
 
 // Items for laid glyphs. Word and line boxes are the union of their characters'

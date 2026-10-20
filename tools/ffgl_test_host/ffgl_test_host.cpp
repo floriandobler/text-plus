@@ -268,6 +268,11 @@ int main( int argc, char** argv )
 	std::string dumpDir;
 	std::vector< std::string > tracePrint;// "@trace=A1 Spread,...": print values every frame
 	std::map< unsigned, float > hostModel;
+	// "@ui=rows|count": after rendering, lists the visible rows per group as a host
+	// shows them (the four channels of a colour are one row).
+	std::string uiReport;
+	// "@input=photo": gives effect plugins an input texture (a colourful test picture)
+	std::string inputKind;
 
 	FFGLViewportStruct vp{ 0, 0, (GLuint)W, (GLuint)H };
 	auto tInst        = std::chrono::steady_clock::now();
@@ -429,6 +434,16 @@ int main( int argc, char** argv )
 			straight = val != "premul";
 			continue;
 		}
+		if( key == "@input" )
+		{
+			inputKind = val;
+			continue;
+		}
+		if( key == "@ui" )
+		{
+			uiReport = val.empty() ? "rows" : val;
+			continue;
+		}
 		if( !setParam( key, val ) )
 			return 1;
 	}
@@ -447,6 +462,41 @@ int main( int argc, char** argv )
 	glGenVertexArrays( 1, &hostVao );
 	glBindVertexArray( hostVao );
 
+	// Input texture for effects: diagonal colour bands with soft circles (straight alpha, opaque)
+	GLuint inputTex = 0;
+	FFGLTextureStruct inputStruct{};
+	FFGLTextureStruct* inputList[ 1 ] = { &inputStruct };
+	if( !inputKind.empty() )
+	{
+		std::vector< unsigned char > img( (size_t)W * H * 4 );
+		for( int y = 0; y < H; ++y )
+			for( int x = 0; x < W; ++x )
+			{
+				const float u = (float)x / W, v = (float)y / H;
+				float r = 0.5f + 0.5f * std::sin( 6.2831853f * ( u * 1.5f + v * 0.7f ) );
+				float g = 0.5f + 0.5f * std::sin( 6.2831853f * ( u * 0.8f - v * 1.3f + 0.33f ) );
+				float b = 0.5f + 0.5f * std::sin( 6.2831853f * ( u * 2.1f + 0.66f ) );
+				const float cx = std::fmod( u * 6.0f, 1.0f ) - 0.5f, cy = std::fmod( v * 3.0f, 1.0f ) - 0.5f;
+				const float ring = std::exp( -( cx * cx + cy * cy ) * 18.0f );
+				r = std::fmin( 1.0f, r * 0.8f + ring * 0.4f );
+				g = std::fmin( 1.0f, g * 0.8f + ring * 0.4f );
+				b = std::fmin( 1.0f, b * 0.8f + ring * 0.4f );
+				unsigned char* px = &img[ ( (size_t)y * W + x ) * 4 ];
+				px[ 0 ] = (unsigned char)( r * 255 );
+				px[ 1 ] = (unsigned char)( g * 255 );
+				px[ 2 ] = (unsigned char)( b * 255 );
+				px[ 3 ] = 255;
+			}
+		glGenTextures( 1, &inputTex );
+		glBindTexture( GL_TEXTURE_2D, inputTex );
+		glTexImage2D( GL_TEXTURE_2D, 0, GL_RGBA8, W, H, 0, GL_RGBA, GL_UNSIGNED_BYTE, img.data() );
+		glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR );
+		glTexParameteri( GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR );
+		glBindTexture( GL_TEXTURE_2D, 0 );
+		inputStruct = FFGLTextureStruct{ (FFUInt32)W, (FFUInt32)H, (FFUInt32)W, (FFUInt32)H, inputTex };
+	}
+	const FFUInt32 numInputs = inputTex ? 1u : 0u;
+
 	// Wait until the plugin has its font list (the first scan on a fresh machine
 	// can take seconds); frames rendered meanwhile do not count.
 	{
@@ -455,7 +505,7 @@ int main( int argc, char** argv )
 		while( fam != byName.end() && call( FF_GET_NUM_PARAMETER_ELEMENTS, u( fam->second ), inst ).UIntValue <= 1 &&
 			   std::chrono::steady_clock::now() - t0 < std::chrono::seconds( 90 ) )
 		{
-			ProcessOpenGLStruct pgl{ 0, nullptr, fbo };
+			ProcessOpenGLStruct pgl{ numInputs, numInputs ? inputList : nullptr, fbo };
 			call( FF_PROCESS_OPENGL, ptr( &pgl ), inst );
 			std::this_thread::sleep_for( std::chrono::milliseconds( 20 ) );
 		}
@@ -546,7 +596,7 @@ int main( int argc, char** argv )
 			call( FF_PROCESS_OPENGL, ptr( &opgl ), others[ k ] );
 			glBindFramebuffer( GL_FRAMEBUFFER, fbo );
 		}
-		ProcessOpenGLStruct pgl{ 0, nullptr, fbo };
+		ProcessOpenGLStruct pgl{ numInputs, numInputs ? inputList : nullptr, fbo };
 		auto t0 = std::chrono::steady_clock::now();
 		call( FF_PROCESS_OPENGL, ptr( &pgl ), inst );
 		glFinish();
@@ -700,6 +750,41 @@ int main( int argc, char** argv )
 			std::snprintf( disp, sizeof( disp ), "%s", d ? d : "" );
 			std::printf( "  %-14s = %g  (%s)\n", name.c_str(), *(float*)&v.UIntValue, disp );
 		}
+	}
+
+	if( !uiReport.empty() )
+	{
+		std::string lastGroup;
+		int total = 0, inGroup = 0;
+		std::vector< std::pair< std::string, int > > perGroup;
+		for( unsigned i = 0; i < numParams; ++i )
+		{
+			if( types[ i ] == FF_TYPE_SATURATION || types[ i ] == FF_TYPE_BRIGHTNESS || types[ i ] == FF_TYPE_ALPHA )
+				continue;// part of the colour row above
+			if( !call( FF_GET_PRAMETER_VISIBILITY, u( i ), inst ).UIntValue )
+				continue;
+			char group[ 256 ] = "";
+			GetStringStruct gs{ i, { group, (FFUInt32)sizeof( group ) - 1 } };
+			call( FF_GET_PARAM_GROUP, ptr( &gs ), inst );
+			if( perGroup.empty() || perGroup.back().first != group )
+				perGroup.emplace_back( group, 0 );
+			++perGroup.back().second;
+			++total;
+			if( uiReport == "rows" )
+			{
+				if( lastGroup != group )
+					std::printf( "  [%s]\n", group );
+				lastGroup = group;
+				const char* name = (const char*)call( FF_GET_PARAMETER_NAME, u( i ) ).PointerValue;
+				const char* d    = (const char*)call( FF_GET_PARAMETER_DISPLAY, u( i ), inst ).PointerValue;
+				std::printf( "      %-26s %s\n", name, types[ i ] == FF_TYPE_HUE ? "(colour)" : d ? d : "" );
+			}
+		}
+		(void)inGroup;
+		std::printf( "  UI: %d visible rows in %zu groups:", total, perGroup.size() );
+		for( auto& g : perGroup )
+			std::printf( " %s %d,", g.first.c_str(), g.second );
+		std::printf( "\n" );
 	}
 
 	for( FFInstanceID o : others )

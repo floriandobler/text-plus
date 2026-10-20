@@ -59,6 +59,9 @@ protected:
 	unsigned paramCount() const { return (unsigned)values.size(); }
 	// Changes a value from inside the plugin and tells the host.
 	void setValue( unsigned id, float v );
+	// The value the parameter was defined with.
+	float defaultValue( unsigned id );
+	void resetToDefault( unsigned id ) { setValue( id, defaultValue( id ) ); }
 	Rgba colorOf( unsigned hueId ) const;
 	// Records the host's value; true if it differs from what the host knew before.
 	bool hostChanged( unsigned id, float v );
